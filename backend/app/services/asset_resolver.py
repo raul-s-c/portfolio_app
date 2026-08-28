@@ -68,7 +68,15 @@ def resolve_asset(client: "Client", movement: ParsedMovement) -> str:
     created_asset = client.table("assets").insert(asset).execute().data[0]
 
     if symbol:
-        identifier_rows = [{"asset_id": created_asset["id"], "provider": "manual", "symbol": symbol, "is_primary": True}]
+        identifier_rows = [
+            {
+                "asset_id": created_asset["id"],
+                "provider": "manual",
+                "symbol": symbol,
+                "exchange": "",
+                "is_primary": True,
+            }
+        ]
         if "." not in symbol:
             identifier_rows.append(
                 {

@@ -18,19 +18,19 @@ ijpn as (
   select '05b81b6e-0005-514c-8ace-63dff08d02d3'::uuid as id
 )
 insert into public.asset_identifiers (asset_id, provider, symbol, exchange, valid_to, is_primary)
-select id, 'manual', 'IHYG', null, date '2026-08-28', false from eunw
+select id, 'manual', 'IHYG', '', date '2026-08-28', false from eunw
 union all
 select id, 'yahoo', 'IHYG.DE', 'XETRA', date '2026-08-28', false from eunw
 union all
-select id, 'manual', 'EUNW', null, null, true from eunw
+select id, 'manual', 'EUNW', '', null, true from eunw
 union all
 select id, 'yahoo', 'EUNW.DE', 'XETRA', null, true from eunw
 union all
-select id, 'manual', 'IQQJ', null, date '2026-08-28', false from ijpn
+select id, 'manual', 'IQQJ', '', date '2026-08-28', false from ijpn
 union all
 select id, 'yahoo', 'IQQJ.DE', 'XETRA', date '2026-08-28', false from ijpn
 union all
-select id, 'manual', 'IJPN', null, null, true from ijpn
+select id, 'manual', 'IJPN', '', null, true from ijpn
 union all
 select id, 'yahoo', 'IJPN.DE', 'XETRA', null, true from ijpn
 on conflict (provider, symbol, exchange) do nothing;

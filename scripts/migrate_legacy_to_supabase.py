@@ -56,19 +56,20 @@ def _add_identifier(
     provider: str,
     symbol: str | None,
     *,
-    exchange: str | None = None,
+    exchange: str | None = "",
     is_primary: bool = False,
 ) -> None:
     canonical = canonical_symbol(symbol)
     if not canonical:
         return
-    key = (asset_key, provider, canonical, exchange)
+    normalized_exchange = exchange or ""
+    key = (asset_key, provider, canonical, normalized_exchange)
     identifiers[key] = {
         "asset_key": asset_key,
         "asset_id": stable_asset_id(asset_key),
         "provider": provider,
         "symbol": canonical,
-        "exchange": exchange,
+        "exchange": normalized_exchange,
         "is_primary": is_primary,
     }
 

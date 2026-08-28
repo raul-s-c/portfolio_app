@@ -111,6 +111,7 @@ def upsert_manual_asset(
                 "asset_id": candidate.asset_id,
                 "provider": "manual",
                 "symbol": candidate.symbol,
+                "exchange": "",
                 "is_primary": True,
             }
         )
@@ -120,6 +121,7 @@ def upsert_manual_asset(
                 "asset_id": candidate.asset_id,
                 "provider": "yahoo",
                 "symbol": canonical_symbol(yahoo_symbol),
+                "exchange": "",
                 "is_primary": True,
             }
         )
