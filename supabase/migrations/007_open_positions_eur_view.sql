@@ -10,6 +10,8 @@ select distinct on (ps.asset_id)
 from public.price_snapshots ps
 order by ps.asset_id, ps.priced_at desc;
 
+drop view if exists public.v_open_positions;
+
 create or replace view public.v_open_positions as
 with movements as (
   select
