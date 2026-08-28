@@ -575,12 +575,27 @@ Para uso personal, mono-usuario esta bien, pero conviene anadir columna `owner_i
 |---|---|
 | `supabase/migrations/001_portfolio_core.sql` | Modelo principal |
 | `supabase/migrations/002_seed_known_aliases.sql` | Mappings IHYG/EUNW e IQQJ/IJPN |
+| `supabase/migrations/003_asset_resolution_queue.sql` | Cola de activos pendientes de resolver |
+| `supabase/migrations/004_api_role_grants.sql` | Permisos REST para Supabase |
+| `supabase/migrations/005_harden_asset_identifier_uniqueness.sql` | Unicidad de identificadores |
+| `supabase/migrations/006_authenticated_personal_writes.sql` | Escritura desde la app autenticada |
+| `supabase/migrations/007_open_positions_eur_view.sql` | Posiciones abiertas con valor en EUR |
+| `supabase/migrations/008_personal_app_state.sql` | Estado JSON legacy para cash y patrimonio |
+| `scripts/load_legacy_app_state.mjs` | Carga cash y patrimonio legacy en Supabase |
 | `backend/app/services/asset_resolver.py` | Identidad estable de activos |
 | `backend/app/services/portfolio.py` | Calculo de posiciones y ventas |
 | `backend/app/services/import_service.py` | Insercion de importaciones |
 | `backend/app/services/prices.py` | Refresco de precios |
 | `docs/import_contract.md` | Reglas para no romper importadores |
 | `docs/supabase_setup.md` | Setup manual de Supabase |
+
+Para recuperar las vistas de `Cash` y `Patrimonio` desde el HTML legacy:
+
+```bash
+node scripts/load_legacy_app_state.mjs
+```
+
+Antes de ese comando hay que ejecutar `supabase/migrations/008_personal_app_state.sql` en el SQL Editor de Supabase.
 
 ## Estado Final De Este Paquete
 
