@@ -86,6 +86,7 @@ portfolio_app/
       001_portfolio_core.sql
       002_seed_known_aliases.sql
       003_asset_resolution_queue.sql
+      004_api_role_grants.sql
 
   backend/
     pyproject.toml

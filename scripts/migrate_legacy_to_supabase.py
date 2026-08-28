@@ -4,8 +4,12 @@ import argparse
 import json
 import os
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 try:
     from legacy_common import canonical_symbol, write_json
@@ -18,6 +22,17 @@ ASSET_NAMESPACE = uuid.UUID("7f5f7f4d-f5c3-5b0c-9821-27ff3e23e0c9")
 
 def stable_asset_id(asset_key: str) -> str:
     return str(uuid.uuid5(ASSET_NAMESPACE, asset_key))
+
+
+def load_dotenv(path: Path = Path(".env")) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        os.environ[key.strip()] = value.strip().strip('"').strip("'")
 
 
 def _asset_key(symbol: str, isin: str | None = None) -> str:
@@ -148,6 +163,10 @@ def build_plan(export_payload: dict[str, Any]) -> dict[str, Any]:
         key = symbol_to_asset_key[symbol]
         _add_identifier(identifiers, key, "yahoo", quote.get("quote_symbol"), is_primary=True)
 
+    priced_at = (
+        export_payload.get("seed_meta", {}).get("migrated_at")
+        or datetime.now(UTC).replace(microsecond=0).isoformat()
+    )
     price_snapshots = []
     for price in export_payload.get("manual_prices", []):
         symbol = canonical_symbol(price.get("symbol"))
@@ -158,6 +177,7 @@ def build_plan(export_payload: dict[str, Any]) -> dict[str, Any]:
             {
                 "asset_key": key,
                 "asset_id": stable_asset_id(key),
+                "priced_at": priced_at,
                 "price": price["price"],
                 "previous_close": None,
                 "currency": price.get("currency") or "EUR",
@@ -204,36 +224,68 @@ def validate_export(export_payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_to_supabase(plan: dict[str, Any]) -> None:
-    try:
-        from supabase import create_client
-    except ImportError as exc:
-        raise SystemExit("supabase package is required for non-dry-run migration.") from exc
+    load_dotenv()
 
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for non-dry-run migration.")
 
-    client = create_client(url, key)
-    for broker in plan["brokers"]:
-        client.table("brokers").upsert({"name": broker}, on_conflict="name").execute()
+    rest_url = url.rstrip("/") + "/rest/v1"
+    headers = {
+        "apikey": key,
+        "content-type": "application/json",
+        "prefer": "resolution=merge-duplicates,return=representation",
+    }
+    if key.startswith("eyJ"):
+        headers["authorization"] = f"Bearer {key}"
 
-    client.table("assets").upsert(
+    def request_json(method: str, endpoint: str, payload: Any | None = None) -> Any:
+        data = json.dumps(payload).encode("utf-8") if payload is not None else None
+        request = Request(endpoint, data=data, headers=headers, method=method)
+        try:
+            with urlopen(request, timeout=60) as response:
+                body = response.read().decode("utf-8")
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise SystemExit(f"Supabase request failed: {exc.code} {body}") from exc
+        return json.loads(body) if body else []
+
+    def upsert(table: str, rows: list[dict[str, Any]], on_conflict: str) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        endpoint = f"{rest_url}/{table}?{urlencode({'on_conflict': on_conflict})}"
+        try:
+            return request_json("POST", endpoint, rows)
+        except SystemExit as exc:
+            raise SystemExit(f"Supabase upsert failed for {table}: {exc}") from exc
+
+    def select(table: str, query: str) -> list[dict[str, Any]]:
+        try:
+            return request_json("GET", f"{rest_url}/{table}?{query}")
+        except SystemExit as exc:
+            raise SystemExit(f"Supabase select failed for {table}: {exc}") from exc
+
+    upsert("brokers", [{"name": broker} for broker in plan["brokers"]], "name")
+
+    upsert(
+        "assets",
         [
             {key: value for key, value in asset.items() if key != "asset_key"}
             for asset in plan["assets"]
         ],
-        on_conflict="id",
-    ).execute()
-    client.table("asset_identifiers").upsert(
+        "id",
+    )
+    upsert(
+        "asset_identifiers",
         [
             {key: value for key, value in identifier.items() if key != "asset_key"}
             for identifier in plan["identifiers"]
         ],
-        on_conflict="provider,symbol,exchange",
-    ).execute()
+        "provider,symbol,exchange",
+    )
 
-    brokers = client.table("brokers").select("id,name").execute().data
+    brokers = select("brokers", "select=id,name")
     broker_ids = {row["name"]: row["id"] for row in brokers}
 
     transactions = [
@@ -268,10 +320,25 @@ def write_to_supabase(plan: dict[str, Any]) -> None:
         }
         for row in plan["dividends"]
     ]
-    if transactions:
-        client.table("transactions").upsert(transactions, on_conflict="source_row_hash").execute()
-    if dividends:
-        client.table("dividends").upsert(dividends, on_conflict="source_row_hash").execute()
+    upsert("transactions", transactions, "source_row_hash")
+    upsert("dividends", dividends, "source_row_hash")
+    price_snapshots = [
+        {
+            "asset_id": row["asset_id"],
+            "priced_at": row["priced_at"],
+            "price": row["price"],
+            "previous_close": row["previous_close"],
+            "currency": row["currency"],
+            "provider": row["provider"],
+            "raw_payload": row["raw_payload"],
+        }
+        for row in plan["price_snapshots"]
+    ]
+    upsert(
+        "price_snapshots",
+        price_snapshots,
+        "asset_id,priced_at,provider",
+    )
 
 
 def main() -> None:
