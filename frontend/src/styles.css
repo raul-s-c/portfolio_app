@@ -93,6 +93,10 @@ h2 {
   gap: 8px;
 }
 
+.login-box input {
+  width: 190px;
+}
+
 .login-box span {
   color: #526070;
   font-size: 13px;
@@ -258,6 +262,10 @@ tfoot th {
   .login-box {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .login-box input {
+    width: 100%;
   }
 
   .summary-grid,

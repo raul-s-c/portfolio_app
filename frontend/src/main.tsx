@@ -99,6 +99,7 @@ const DEFAULT_TRANSACTION_FORM: TransactionForm = {
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [positions, setPositions] = useState<Position[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [identifiers, setIdentifiers] = useState<Identifier[]>([]);
@@ -130,13 +131,17 @@ function App() {
   }, [session]);
 
   async function signIn() {
-    if (!email) return;
-    const { error } = await supabase.auth.signInWithOtp({ email });
-    setMessage(error ? error.message : "Revisa tu email para entrar.");
+    if (!email || !password) {
+      setMessage("Introduce email y contrasena.");
+      return;
+    }
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setMessage(error ? "No he podido iniciar sesion con ese email y contrasena." : "");
   }
 
   async function signOut() {
     await supabase.auth.signOut();
+    setPassword("");
     setMessage("");
   }
 
@@ -317,7 +322,20 @@ function App() {
             </>
           ) : (
             <>
-              <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="email" />
+              <input
+                autoComplete="email"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="email"
+              />
+              <input
+                autoComplete="current-password"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="contrasena"
+              />
               <button onClick={signIn}>Entrar</button>
             </>
           )}

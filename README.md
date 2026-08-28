@@ -556,6 +556,15 @@ Pendiente confirmar:
 
 El esquema incluye RLS para lectura autenticada y escritura con service role.
 
+El frontend usa login con email y contrasena, no enlace magico por email. Esto evita el limite de reintentos de OTP de Supabase.
+
+Para uso personal:
+
+1. En Supabase, ir a `Authentication` -> `Users`.
+2. Crear tu usuario con email y contrasena.
+3. Si Supabase ofrece `Auto Confirm User`, dejarlo marcado para poder entrar inmediatamente.
+4. Mantener las claves privadas fuera del frontend. El navegador solo debe usar `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY`.
+
 Antes de meter datos reales, revisar si quieres modelo mono-usuario simple o multiusuario.
 
 Para uso personal, mono-usuario esta bien, pero conviene anadir columna `owner_id` si algun dia quieres compartir o separar usuarios.
