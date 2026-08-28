@@ -88,6 +88,8 @@ portfolio_app/
       003_asset_resolution_queue.sql
       004_api_role_grants.sql
       005_harden_asset_identifier_uniqueness.sql
+      006_authenticated_personal_writes.sql
+      007_open_positions_eur_view.sql
 
   backend/
     pyproject.toml
