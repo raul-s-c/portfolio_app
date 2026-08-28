@@ -358,6 +358,43 @@ tfoot th {
   font-size: 12px;
 }
 
+.report-list {
+  display: grid;
+  gap: 12px;
+  padding: 15px;
+}
+
+.report-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #e1e6ec;
+  border-radius: 8px;
+  padding: 13px;
+}
+
+.report-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.report-card header span {
+  color: #657184;
+  font-size: 12px;
+}
+
+.report-card pre {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  color: #293241;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .queue-list {
   display: grid;
   gap: 10px;

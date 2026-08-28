@@ -5,6 +5,7 @@ from app.services.asset_onboarding import find_existing_asset, upsert_manual_ass
 from app.services.import_service import import_movements, parse_file
 from app.services.portfolio import calculate_open_positions
 from app.services.prices import update_price_snapshots
+from app.services.research_reports import ReportRequest, generate_research_report
 
 router = APIRouter()
 
@@ -67,3 +68,27 @@ async def import_file(
 async def refresh_prices() -> dict:
     client = service_client()
     return await update_price_snapshots(client)
+
+
+@router.post("/reports/portfolio")
+async def create_portfolio_report(payload: dict) -> dict:
+    client = service_client()
+    request = ReportRequest(
+        report_type="portfolio_periodic",
+        focus=payload.get("focus"),
+        max_positions=int(payload.get("max_positions") or 12),
+        max_web_results=int(payload.get("max_web_results") or 6),
+    )
+    return await generate_research_report(client, request)
+
+
+@router.post("/reports/rebalance")
+async def create_rebalance_report(payload: dict) -> dict:
+    client = service_client()
+    request = ReportRequest(
+        report_type="rebalance_opportunity",
+        focus=payload.get("focus"),
+        max_positions=int(payload.get("max_positions") or 12),
+        max_web_results=int(payload.get("max_web_results") or 6),
+    )
+    return await generate_research_report(client, request)

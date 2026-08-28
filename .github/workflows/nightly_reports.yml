@@ -1,0 +1,42 @@
+name: Nightly reports
+
+on:
+  schedule:
+    - cron: "30 22 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      report_type:
+        description: Report type
+        required: true
+        default: portfolio_periodic
+        type: choice
+        options:
+          - portfolio_periodic
+          - rebalance_opportunity
+      focus:
+        description: Optional focus
+        required: false
+        default: ""
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-mini' }}
+      BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e backend
+      - name: Generate portfolio report
+        run: |
+          python scripts/nightly_reports.py --type "${{ github.event.inputs.report_type || 'portfolio_periodic' }}" --focus "${{ github.event.inputs.focus || '' }}"

@@ -20,6 +20,7 @@ type TabId =
   | "wealth"
   | "snapshots"
   | "importer"
+  | "reports"
   | "queue"
   | "backup";
 
@@ -123,6 +124,17 @@ type ResolutionQueueItem = {
   created_at: string;
 };
 
+type ResearchReport = {
+  id: string;
+  report_type: "portfolio_periodic" | "rebalance_opportunity";
+  title: string;
+  period_start: string | null;
+  period_end: string | null;
+  content_markdown: string;
+  model: string;
+  created_at: string;
+};
+
 type LegacyCash = {
   accounts?: Array<{ name: string; values?: Record<string, number>; comments?: Record<string, string> }>;
   objectives?: Array<{ name: string; target: number; current: number; targetDate?: string; simulationAdd?: number }>;
@@ -189,6 +201,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "wealth", label: "Patrimonio" },
   { id: "snapshots", label: "Snapshots" },
   { id: "importer", label: "Importador" },
+  { id: "reports", label: "Informes" },
   { id: "queue", label: "Pendientes" },
   { id: "backup", label: "Backup" },
 ];
@@ -240,6 +253,7 @@ function App() {
   const [priceSnapshots, setPriceSnapshots] = useState<PriceSnapshot[]>([]);
   const [portfolioSnapshots, setPortfolioSnapshots] = useState<PortfolioSnapshot[]>([]);
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
+  const [reports, setReports] = useState<ResearchReport[]>([]);
   const [legacyAppState, setLegacyAppState] = useState<LegacyAppState | null>(null);
   const [legacyStateMissing, setLegacyStateMissing] = useState(false);
   const [assetForm, setAssetForm] = useState<AssetForm>(DEFAULT_ASSET_FORM);
@@ -297,6 +311,7 @@ function App() {
     setPriceSnapshots([]);
     setPortfolioSnapshots([]);
     setQueue([]);
+    setReports([]);
     setLegacyAppState(null);
   }
 
@@ -314,6 +329,7 @@ function App() {
       portfolioSnapshotsResult,
       queueResult,
       appStateResult,
+      reportsResult,
     ] = await Promise.all([
       supabase.from("v_open_positions").select("*").order("name"),
       supabase.from("assets").select("id,asset_type,name,isin,currency").order("name"),
@@ -329,6 +345,11 @@ function App() {
         .eq("status", "pending")
         .order("created_at", { ascending: false }),
       supabase.from("personal_app_state").select("payload").eq("key", "legacy_html_state").maybeSingle(),
+      supabase
+        .from("research_reports")
+        .select("id,report_type,title,period_start,period_end,content_markdown,model,created_at")
+        .order("created_at", { ascending: false })
+        .limit(50),
     ]);
 
     const coreError =
@@ -367,6 +388,9 @@ function App() {
       if (payload?.cash?.selectedYear) setCashYear(String(payload.cash.selectedYear));
       const latestMonth = latestWealthMonth(payload?.wealth_summary ?? payload?.wealth_rows ?? []);
       if (latestMonth) setWealthMonth(latestMonth);
+    }
+    if (!reportsResult.error) {
+      setReports((reportsResult.data ?? []) as ResearchReport[]);
     }
     setLoading(false);
   }
@@ -740,6 +764,7 @@ function App() {
         />
       )}
       {activeTab === "importer" && <ImporterView />}
+      {activeTab === "reports" && <ReportsView reports={reports} />}
       {activeTab === "queue" && <QueueView queue={queue} />}
       {activeTab === "backup" && (
         <BackupView
@@ -1461,6 +1486,49 @@ function ImporterView() {
         La vista ya esta reservada en la app. El parser legacy existe en el HTML y el siguiente paso es moverlo a un script/API para validar candidatos antes de insertarlos en Supabase.
       </p>
     </section>
+  );
+}
+
+function ReportsView({ reports }: { reports: ResearchReport[] }) {
+  const periodic = reports.filter((report) => report.report_type === "portfolio_periodic");
+  const rebalance = reports.filter((report) => report.report_type === "rebalance_opportunity");
+  const latest = reports[0];
+  return (
+    <>
+      <section className="panel">
+        <h2>Informes y ponderacion</h2>
+        <div className="summary-grid compact">
+          <Metric label="Informes periodicos" value={periodic.length} />
+          <Metric label="Recomendaciones" value={rebalance.length} />
+          <Metric label="Ultimo modelo" value={latest?.model ?? ""} />
+          <Metric label="Ultima fecha" value={latest ? new Date(latest.created_at).toLocaleDateString("es-ES") : ""} />
+        </div>
+        <p className="muted">
+          Los informes se generan desde backend/GitHub Actions con Brave Search para contexto web y OpenAI para el analisis. La app solo lee los resultados guardados.
+        </p>
+      </section>
+      <section className="panel">
+        <h2>Ultimos informes</h2>
+        <div className="report-list">
+          {reports.length === 0 ? (
+            <p className="empty">Sin informes todavia.</p>
+          ) : (
+            reports.map((report) => (
+              <article className="report-card" key={report.id}>
+                <header>
+                  <strong>{report.title}</strong>
+                  <span>
+                    {report.report_type === "portfolio_periodic" ? "Informe periodico" : "Ponderacion"} -{" "}
+                    {new Date(report.created_at).toLocaleString("es-ES")}
+                  </span>
+                </header>
+                <pre>{report.content_markdown}</pre>
+              </article>
+            ))
+          )}
+        </div>
+      </section>
+    </>
   );
 }
 

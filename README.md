@@ -211,6 +211,14 @@ Crear:
 SUPABASE_URL
 SUPABASE_ANON_KEY
 SUPABASE_SERVICE_ROLE_KEY
+OPENAI_API_KEY
+BRAVE_SEARCH_API_KEY
+```
+
+Opcionalmente crear como `Actions variable`:
+
+```text
+OPENAI_MODEL=gpt-4.1-mini
 ```
 
 ## Backend Local
@@ -393,13 +401,46 @@ Endpoint manual:
 POST /api/prices/refresh
 ```
 
+## Informes Con Brave + OpenAI
+
+El flujo previsto es:
+
+1. La cartera y posiciones salen de Supabase.
+2. Si hace falta contexto externo, `BRAVE_SEARCH_API_KEY` consulta Brave Search.
+3. `OPENAI_API_KEY` procesa la cartera y los resultados web.
+4. El informe se guarda en `research_reports`.
+5. El frontend lo muestra en la pestana `Informes`.
+
+Migracion requerida:
+
+```text
+supabase/migrations/009_research_reports.sql
+```
+
+Comandos locales:
+
+```bash
+python scripts/nightly_reports.py --type portfolio_periodic
+python scripts/nightly_reports.py --type rebalance_opportunity --focus "ponderar nuevas aportaciones"
+```
+
+Endpoints backend:
+
+```text
+POST /api/reports/portfolio
+POST /api/reports/rebalance
+```
+
+El workflow `.github/workflows/nightly_reports.yml` genera informes periodicos de lunes a viernes y tambien permite ejecucion manual con tipo `portfolio_periodic` o `rebalance_opportunity`.
+
 ## GitHub Actions
 
-Hay dos workflows:
+Hay tres workflows:
 
 ```text
 .github/workflows/backend_tests.yml
 .github/workflows/nightly_prices.yml
+.github/workflows/nightly_reports.yml
 ```
 
 `backend_tests.yml`:
@@ -412,6 +453,13 @@ Hay dos workflows:
 - Corre de lunes a viernes.
 - Hora UTC: `22:15`.
 - Ejecuta `scripts/nightly_prices.py`.
+
+`nightly_reports.yml`:
+
+- Corre de lunes a viernes.
+- Hora UTC: `22:30`.
+- Ejecuta `scripts/nightly_reports.py`.
+- Usa Brave para busqueda web y OpenAI para generar el informe.
 
 Cron actual:
 
@@ -581,11 +629,14 @@ Para uso personal, mono-usuario esta bien, pero conviene anadir columna `owner_i
 | `supabase/migrations/006_authenticated_personal_writes.sql` | Escritura desde la app autenticada |
 | `supabase/migrations/007_open_positions_eur_view.sql` | Posiciones abiertas con valor en EUR |
 | `supabase/migrations/008_personal_app_state.sql` | Estado JSON legacy para cash y patrimonio |
+| `supabase/migrations/009_research_reports.sql` | Informes generados por Brave + OpenAI |
 | `scripts/load_legacy_app_state.mjs` | Carga cash y patrimonio legacy en Supabase |
+| `scripts/nightly_reports.py` | Generacion periodica de informes |
 | `backend/app/services/asset_resolver.py` | Identidad estable de activos |
 | `backend/app/services/portfolio.py` | Calculo de posiciones y ventas |
 | `backend/app/services/import_service.py` | Insercion de importaciones |
 | `backend/app/services/prices.py` | Refresco de precios |
+| `backend/app/services/research_reports.py` | Busqueda Brave, analisis OpenAI y guardado de informes |
 | `docs/import_contract.md` | Reglas para no romper importadores |
 | `docs/supabase_setup.md` | Setup manual de Supabase |
 
