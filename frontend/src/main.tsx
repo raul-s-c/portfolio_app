@@ -961,7 +961,15 @@ function App() {
           saving={savingState}
         />
       )}
-      {activeTab === "property" && <PropertyView property={legacyAppState?.property ?? []} wealthRows={wealthRows} />}
+      {activeTab === "property" && (
+        <PropertyView
+          property={legacyAppState?.property ?? []}
+          wealthRows={wealthRows}
+          onChange={(nextProperty) => patchLegacyAppState({ property: nextProperty })}
+          onSave={() => saveLegacyAppState()}
+          saving={savingState}
+        />
+      )}
       {activeTab === "wealth" && (
         <WealthView
           rows={wealthRows}
@@ -2027,25 +2035,74 @@ function CashView({
 function PropertyView({
   property,
   wealthRows,
+  onChange,
+  onSave,
+  saving,
 }: {
   property: Array<Record<string, string | number | null>>;
   wealthRows: WealthRow[];
+  onChange: (value: Array<Record<string, string | number | null>>) => void;
+  onSave: () => void;
+  saving: boolean;
 }) {
-  const rows = property.length > 0 ? property : wealthRows.filter((row) => String(row.Tipo ?? "").trim().toLowerCase() === "piso");
+  const rows = property.length > 0 ? property : propertyRowsFromWealth(wealthRows);
+  const latest = rows.at(-1);
+  const latestPropertyValue = propertyValue(latest);
+  const latestMortgage = propertyMortgage(latest);
+  const latestFamilyDebt = propertyFamilyDebt(latest);
+  const latestEquity = propertyEquity(latest);
+  const replaceRows = (nextRows: Array<Record<string, string | number | null>>) => onChange(nextRows.map(normalizePropertyRow));
+  const updateRow = (index: number, key: string, value: string) => {
+    replaceRows(rows.map((row, rowIndex) => (rowIndex === index ? { ...row, [key]: key === "date" ? value : toNumber(value) } : row)));
+  };
+  const addRow = () => {
+    const last = rows.at(-1);
+    replaceRows([
+      ...rows,
+      normalizePropertyRow({
+        date: new Date().toISOString().slice(0, 10),
+        propertyValue: propertyValue(last),
+        mortgage: propertyMortgage(last),
+        familyDebt: propertyFamilyDebt(last),
+      }),
+    ]);
+  };
+  const deleteRow = (index: number) => replaceRows(rows.filter((_, rowIndex) => rowIndex !== index));
   return (
-    <section className="panel">
-      <h2>Seguimiento piso</h2>
-      <SimpleTable
-        columns={["Fecha", "Valor piso", "Hipoteca", "Deuda familiar", "Equity"]}
-        rows={rows.map((row) => [
-          row.date ?? row.Fecha ?? row.Mes ?? "",
-          formatMoney(toNumber(row.propertyValue ?? row["Valor piso"] ?? row["Valor mercado"] ?? 0)),
-          formatMoney(toNumber(row.mortgage ?? row.Hipoteca ?? row["Valor aportaciones"] ?? 0)),
-          formatMoney(toNumber(row.familyDebt ?? row["Deuda familiar"] ?? 0)),
-          formatMoney(toNumber(row.equity ?? row.Equity ?? (toNumber(row["Valor mercado"] ?? 0) - toNumber(row["Valor aportaciones"] ?? 0)))),
-        ])}
-      />
-    </section>
+    <>
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Seguimiento piso</h2>
+          <div className="toolbar">
+            <button onClick={addRow}>Anadir linea</button>
+            <button onClick={onSave} disabled={saving}>
+              {saving ? "Guardando" : "Guardar piso"}
+            </button>
+          </div>
+        </div>
+        <div className="summary-grid compact">
+          <Metric label="Valor piso actual" value={formatMoney(latestPropertyValue)} />
+          <Metric label="Hipoteca actual" value={formatMoney(latestMortgage)} />
+          <Metric label="Deuda familiar" value={formatMoney(latestFamilyDebt)} />
+          <Metric label="Equity calculado" value={formatMoney(latestEquity)} />
+        </div>
+      </section>
+      <section className="panel">
+        <EditableTable
+          columns={["Fecha", "Valor piso", "Hipoteca", "Deuda familiar", "Equity calculado", ""]}
+          rows={rows.map((row, index) => [
+            <input value={String(row.date ?? "")} onChange={(event) => updateRow(index, "date", event.target.value)} type="date" />,
+            <input value={formatInputNumber(propertyValue(row))} onChange={(event) => updateRow(index, "propertyValue", event.target.value)} inputMode="decimal" />,
+            <input value={formatInputNumber(propertyMortgage(row))} onChange={(event) => updateRow(index, "mortgage", event.target.value)} inputMode="decimal" />,
+            <input value={formatInputNumber(propertyFamilyDebt(row))} onChange={(event) => updateRow(index, "familyDebt", event.target.value)} inputMode="decimal" />,
+            formatMoney(propertyEquity(row)),
+            <button className="ghost danger" onClick={() => deleteRow(index)}>
+              Borrar
+            </button>,
+          ])}
+        />
+      </section>
+    </>
   );
 }
 
@@ -2793,6 +2850,48 @@ function recomputeWealthSummary(rows: WealthRow[]) {
       "RTO total": aportaciones ? (mercado + dividendos) / aportaciones - 1 : 0,
     };
   });
+}
+
+function propertyRowsFromWealth(rows: WealthRow[]) {
+  return rows
+    .filter((row) => String(row.Tipo ?? "").trim().toLowerCase() === "piso")
+    .map((row) =>
+      normalizePropertyRow({
+        date: row.Fecha ?? row.Mes ?? "",
+        propertyValue: row["Valor mercado"] ?? 0,
+        mortgage: row["Valor aportaciones"] ?? 0,
+        familyDebt: row["Deuda familiar"] ?? 0,
+      })
+    );
+}
+
+function normalizePropertyRow(row: Record<string, string | number | null>) {
+  const normalized = {
+    date: String(row.date ?? row.Fecha ?? row.Mes ?? new Date().toISOString().slice(0, 10)).slice(0, 10),
+    propertyValue: propertyValue(row),
+    mortgage: propertyMortgage(row),
+    familyDebt: propertyFamilyDebt(row),
+  };
+  return {
+    ...normalized,
+    equity: normalized.propertyValue - normalized.mortgage - normalized.familyDebt,
+  };
+}
+
+function propertyValue(row: Record<string, string | number | null> | undefined) {
+  return toNumber(row?.propertyValue ?? row?.["Valor piso"] ?? row?.["Valor mercado"] ?? 0);
+}
+
+function propertyMortgage(row: Record<string, string | number | null> | undefined) {
+  return toNumber(row?.mortgage ?? row?.Hipoteca ?? row?.["Valor aportaciones"] ?? 0);
+}
+
+function propertyFamilyDebt(row: Record<string, string | number | null> | undefined) {
+  return toNumber(row?.familyDebt ?? row?.["Deuda familiar"] ?? 0);
+}
+
+function propertyEquity(row: Record<string, string | number | null> | undefined) {
+  return propertyValue(row) - propertyMortgage(row) - propertyFamilyDebt(row);
 }
 
 function cellText(value: React.ReactNode): string {
