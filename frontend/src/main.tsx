@@ -154,6 +154,7 @@ type LegacyAppState = {
   summary?: Record<string, unknown>;
   source_file?: string;
   loaded_at?: string;
+  updated_from_app_at?: string;
 };
 
 type AssetForm = {
@@ -260,6 +261,7 @@ function App() {
   const [transactionForm, setTransactionForm] = useState<TransactionForm>(DEFAULT_TRANSACTION_FORM);
   const [dividendForm, setDividendForm] = useState<DividendForm>(DEFAULT_DIVIDEND_FORM);
   const [loading, setLoading] = useState(false);
+  const [savingState, setSavingState] = useState(false);
   const [message, setMessage] = useState("");
   const [positionSearch, setPositionSearch] = useState("");
   const [movementSearch, setMovementSearch] = useState("");
@@ -431,6 +433,37 @@ function App() {
     setAssetForm(DEFAULT_ASSET_FORM);
     setMessage("Activo guardado.");
     await loadDashboardData();
+  }
+
+  async function saveLegacyAppState(nextState = legacyAppState) {
+    if (!session) {
+      setMessage("Entra con tu email antes de guardar.");
+      return;
+    }
+    if (!nextState) {
+      setMessage("No hay estado legacy cargado para guardar.");
+      return;
+    }
+    const updatedAt = new Date().toISOString();
+    setSavingState(true);
+    const { error } = await supabase.from("personal_app_state").upsert(
+      {
+        key: "legacy_html_state",
+        payload: { ...nextState, updated_from_app_at: updatedAt },
+      },
+      { onConflict: "key" }
+    );
+    setSavingState(false);
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+    setLegacyAppState({ ...nextState, updated_from_app_at: updatedAt });
+    setMessage("Cambios guardados.");
+  }
+
+  function patchLegacyAppState(patch: Partial<LegacyAppState>) {
+    setLegacyAppState((current) => ({ ...(current ?? {}), ...patch }));
   }
 
   async function createTransaction(event: FormEvent) {
@@ -751,9 +784,28 @@ function App() {
         />
       )}
       {activeTab === "etf" && <EtfView positions={enrichedPositions} etfs={legacyAppState?.etfs ?? []} />}
-      {activeTab === "cash" && <CashView cash={cash} year={cashYear} setYear={setCashYear} />}
+      {activeTab === "cash" && (
+        <CashView
+          cash={cash}
+          year={cashYear}
+          setYear={setCashYear}
+          onChange={(nextCash) => patchLegacyAppState({ cash: nextCash })}
+          onSave={() => saveLegacyAppState()}
+          saving={savingState}
+        />
+      )}
       {activeTab === "property" && <PropertyView property={legacyAppState?.property ?? []} />}
-      {activeTab === "wealth" && <WealthView rows={wealthRows} summary={wealthSummary} month={wealthMonth} setMonth={setWealthMonth} />}
+      {activeTab === "wealth" && (
+        <WealthView
+          rows={wealthRows}
+          summary={wealthSummary}
+          month={wealthMonth}
+          setMonth={setWealthMonth}
+          onChange={(nextRows, nextSummary) => patchLegacyAppState({ wealth_rows: nextRows, wealth_summary: nextSummary })}
+          onSave={() => saveLegacyAppState()}
+          saving={savingState}
+        />
+      )}
       {activeTab === "snapshots" && (
         <SnapshotsView
           portfolioSnapshots={portfolioSnapshots}
@@ -1300,7 +1352,21 @@ function EtfView({
   );
 }
 
-function CashView({ cash, year, setYear }: { cash?: LegacyCash; year: string; setYear: (value: string) => void }) {
+function CashView({
+  cash,
+  year,
+  setYear,
+  onChange,
+  onSave,
+  saving,
+}: {
+  cash?: LegacyCash;
+  year: string;
+  setYear: (value: string) => void;
+  onChange: (value: LegacyCash) => void;
+  onSave: () => void;
+  saving: boolean;
+}) {
   const accounts = cash?.accounts ?? [];
   const plan = cash?.plan ?? [];
   const objectives = cash?.objectives ?? [];
@@ -1308,17 +1374,72 @@ function CashView({ cash, year, setYear }: { cash?: LegacyCash; year: string; se
   const years = [...new Set((cash?.months ?? []).map((month) => String(month.year)))].sort();
   const latestMonth = latestMonthWithAccountValue(accounts) ?? months.at(-1)?.key ?? "";
   const cashTotal = accounts.reduce((acc, account) => acc + Number(account.values?.[latestMonth] ?? 0), 0);
+  const applyCash = (mutator: (draft: LegacyCash) => void) => {
+    const draft = cloneCash(cash);
+    mutator(draft);
+    onChange(draft);
+  };
+  const ensureYear = (targetYear: string) => applyCash((draft) => ensureCashYear(draft, Number(targetYear)));
+  const changeObjective = (index: number, key: string, value: string) =>
+    applyCash((draft) => {
+      const row = draft.objectives?.[index];
+      if (!row) return;
+      if (["target", "current", "simulationAdd"].includes(key)) {
+        row[key as "target" | "current" | "simulationAdd"] = toNumber(value);
+      } else {
+        row[key as "name" | "targetDate"] = value;
+      }
+      row.simulationAdd = monthlyObjectiveAdd(row);
+    });
+  const changePlan = (index: number, month: string, value: string, comment?: string) =>
+    applyCash((draft) => {
+      const row = draft.plan?.[index];
+      if (!row) return;
+      row.values = row.values ?? {};
+      row.comments = row.comments ?? {};
+      if (comment != null) row.comments[month] = comment;
+      else row.values[month] = toNumber(value);
+    });
+  const changeAccount = (index: number, month: string, value: string, comment?: string) =>
+    applyCash((draft) => {
+      const row = draft.accounts?.[index];
+      if (!row) return;
+      row.values = row.values ?? {};
+      row.comments = row.comments ?? {};
+      if (comment != null) row.comments[month] = comment;
+      else row.values[month] = toNumber(value);
+    });
   return (
     <>
       <section className="panel">
         <div className="panel-header">
           <h2>Cash</h2>
-          <select value={year} onChange={(event) => setYear(event.target.value)}>
-            {years.length === 0 && <option>{year}</option>}
-            {years.map((item) => (
-              <option key={item}>{item}</option>
-            ))}
-          </select>
+          <div className="toolbar">
+            <select
+              value={year}
+              onChange={(event) => {
+                setYear(event.target.value);
+                ensureYear(event.target.value);
+              }}
+            >
+              {years.length === 0 && <option>{year}</option>}
+              {years.map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => {
+                const nextYear = String(Number(year) + 1);
+                setYear(nextYear);
+                ensureYear(nextYear);
+              }}
+            >
+              Anadir ano
+            </button>
+            <button onClick={onSave} disabled={saving}>
+              {saving ? "Guardando" : "Guardar cash"}
+            </button>
+          </div>
         </div>
         <div className="summary-grid compact">
           <Metric label={`Saldo ${latestMonth || year}`} value={formatMoney(cashTotal)} />
@@ -1329,36 +1450,168 @@ function CashView({ cash, year, setYear }: { cash?: LegacyCash; year: string; se
       </section>
       <section className="two-grid">
         <div className="panel">
-          <h2>Objetivos cash</h2>
-          <SimpleTable
-            columns={["Objetivo", "Actual", "Meta", "Fecha", "Mensual"]}
-            rows={objectives.map((row) => [
-              row.name,
-              formatMoney(row.current),
-              formatMoney(row.target),
-              row.targetDate ?? "",
-              formatMoney(row.simulationAdd),
+          <div className="panel-header">
+            <h2>Objetivos cash</h2>
+            <button
+              onClick={() =>
+                applyCash((draft) => {
+                  draft.objectives = draft.objectives ?? [];
+                  draft.objectives.push({ name: "nuevo objetivo", target: 0, current: 0, targetDate: `${year}-12`, simulationAdd: 0 });
+                })
+              }
+            >
+              Anadir objetivo
+            </button>
+          </div>
+          <EditableTable
+            columns={["Objetivo", "Actual", "Meta", "Fecha", "Mensual", ""]}
+            rows={objectives.map((row, index) => [
+              <input value={row.name} onChange={(event) => changeObjective(index, "name", event.target.value)} />,
+              <input value={row.current ?? 0} onChange={(event) => changeObjective(index, "current", event.target.value)} inputMode="decimal" />,
+              <input value={row.target ?? 0} onChange={(event) => changeObjective(index, "target", event.target.value)} inputMode="decimal" />,
+              <input value={row.targetDate ?? ""} onChange={(event) => changeObjective(index, "targetDate", event.target.value)} placeholder="YYYY-MM" />,
+              formatMoney(monthlyObjectiveAdd(row)),
+              <button
+                onClick={() =>
+                  applyCash((draft) => {
+                    draft.objectives = (draft.objectives ?? []).filter((_, rowIndex) => rowIndex !== index);
+                  })
+                }
+              >
+                Eliminar
+              </button>,
             ])}
           />
         </div>
         <div className="panel">
           <h2>Cuentas</h2>
-          <SimpleTable
+          <EditableTable
             columns={["Cuenta", latestMonth || "Ultimo mes"]}
-            rows={accounts.map((account) => [account.name, formatMoney(account.values?.[latestMonth] ?? 0)])}
+            rows={accounts.map((account, index) => [
+              <input
+                value={account.name}
+                onChange={(event) =>
+                  applyCash((draft) => {
+                    if (draft.accounts?.[index]) draft.accounts[index].name = event.target.value;
+                  })
+                }
+              />,
+              <input
+                value={account.values?.[latestMonth] ?? 0}
+                onChange={(event) => changeAccount(index, latestMonth, event.target.value)}
+                inputMode="decimal"
+              />,
+            ])}
           />
         </div>
       </section>
       <section className="panel">
-        <h2>Costes e ingresos previstos</h2>
-        <WideMatrix
-          firstColumn="Concepto"
-          columns={months.map((month) => month.label ?? month.key)}
-          rows={plan.map((row) => ({
-            label: row.name,
-            values: months.map((month) => formatMoney(row.values?.[month.key] ?? 0)),
-          }))}
-        />
+        <div className="panel-header">
+          <h2>Costes e ingresos previstos</h2>
+          <button
+            onClick={() =>
+              applyCash((draft) => {
+                draft.plan = draft.plan ?? [];
+                draft.plan.push({ name: "nuevo concepto", values: Object.fromEntries(months.map((month) => [month.key, 0])), comments: {} });
+              })
+            }
+          >
+            Anadir linea
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table className="wide-table">
+            <thead>
+              <tr>
+                <th>Concepto</th>
+                {months.map((month) => (
+                  <th key={month.key}>{month.label ?? month.key}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {plan.map((row, index) => (
+                <tr key={index}>
+                  <td>
+                    <input
+                      value={row.name}
+                      onChange={(event) =>
+                        applyCash((draft) => {
+                          if (draft.plan?.[index]) draft.plan[index].name = event.target.value;
+                        })
+                      }
+                    />
+                  </td>
+                  {months.map((month) => (
+                    <td key={month.key}>
+                      <input value={row.values?.[month.key] ?? 0} onChange={(event) => changePlan(index, month.key, event.target.value)} inputMode="decimal" />
+                      <input
+                        className="comment-input"
+                        value={row.comments?.[month.key] ?? ""}
+                        onChange={(event) => changePlan(index, month.key, "", event.target.value)}
+                        placeholder="comentario"
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Cuentas bancarias y cash</h2>
+          <button
+            onClick={() =>
+              applyCash((draft) => {
+                draft.accounts = draft.accounts ?? [];
+                draft.accounts.push({ name: "nueva cuenta", values: Object.fromEntries(months.map((month) => [month.key, 0])), comments: {} });
+              })
+            }
+          >
+            Anadir cuenta
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table className="wide-table">
+            <thead>
+              <tr>
+                <th>Cuenta</th>
+                {months.map((month) => (
+                  <th key={month.key}>{month.label ?? month.key}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.map((account, index) => (
+                <tr key={index}>
+                  <td>
+                    <input
+                      value={account.name}
+                      onChange={(event) =>
+                        applyCash((draft) => {
+                          if (draft.accounts?.[index]) draft.accounts[index].name = event.target.value;
+                        })
+                      }
+                    />
+                  </td>
+                  {months.map((month) => (
+                    <td key={month.key}>
+                      <input value={account.values?.[month.key] ?? 0} onChange={(event) => changeAccount(index, month.key, event.target.value)} inputMode="decimal" />
+                      <input
+                        className="comment-input"
+                        value={account.comments?.[month.key] ?? ""}
+                        onChange={(event) => changeAccount(index, month.key, "", event.target.value)}
+                        placeholder="comentario"
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
     </>
   );
@@ -1382,17 +1635,80 @@ function PropertyView({ property }: { property: Array<Record<string, string | nu
   );
 }
 
-function WealthView({ rows, summary, month, setMonth }: { rows: WealthRow[]; summary: WealthRow[]; month: string; setMonth: (value: string) => void }) {
+function WealthView({
+  rows,
+  summary,
+  month,
+  setMonth,
+  onChange,
+  onSave,
+  saving,
+}: {
+  rows: WealthRow[];
+  summary: WealthRow[];
+  month: string;
+  setMonth: (value: string) => void;
+  onChange: (rows: WealthRow[], summary: WealthRow[]) => void;
+  onSave: () => void;
+  saving: boolean;
+}) {
   const months = [...new Set(rows.map((row) => monthKey(row.Fecha)).filter(Boolean))].sort();
   const selectedMonth = month || months.at(-1) || "";
   const monthRows = rows.filter((row) => monthKey(row.Fecha) === selectedMonth);
   const latest = summary.at(-1);
+  const updateRows = (nextRows: WealthRow[]) => onChange(nextRows, recomputeWealthSummary(nextRows));
+  const updateMonthRow = (rowIndex: number, key: string, value: string) => {
+    const absoluteIndex = rows.findIndex((row) => row === monthRows[rowIndex]);
+    if (absoluteIndex < 0) return;
+    const next = rows.map((row, index) =>
+      index === absoluteIndex
+        ? {
+            ...row,
+            [key]: isWealthNumericField(key) ? toNumber(value) : value,
+          }
+        : row
+    );
+    updateRows(next);
+  };
+  const addType = () => {
+    const next = [
+      ...rows,
+      {
+        Tipo: "Nuevo",
+        "Liquido / No": "Si",
+        Fecha: selectedMonth ? monthEndDate(selectedMonth) : new Date().toISOString().slice(0, 10),
+        "Valor aportaciones": 0,
+        "Valor mercado": 0,
+        "Dividendos recibidos": 0,
+        "Dividendos recibidos en el mes": 0,
+        Rendimiento: 0,
+      },
+    ];
+    updateRows(next);
+  };
+  const copyPreviousMonth = () => {
+    const previousMonth = months.filter((item) => item < selectedMonth).at(-1);
+    const sourceRows = rows.filter((row) => monthKey(row.Fecha) === previousMonth);
+    if (!selectedMonth || sourceRows.length === 0) return;
+    const existingTypes = new Set(monthRows.map((row) => String(row.Tipo ?? "")));
+    const copies = sourceRows
+      .filter((row) => !existingTypes.has(String(row.Tipo ?? "")))
+      .map((row) => ({ ...row, Fecha: monthEndDate(selectedMonth), Mes: Number(selectedMonth.slice(5, 7)), "Año": Number(selectedMonth.slice(0, 4)), Code: `${selectedMonth.slice(5, 7)}/${selectedMonth.slice(0, 4)}` }));
+    updateRows([...rows, ...copies]);
+  };
   return (
     <>
       <section className="panel">
         <div className="panel-header">
           <h2>Patrimonio mensual</h2>
-          <input type="month" value={selectedMonth} onChange={(event) => setMonth(event.target.value)} />
+          <div className="toolbar">
+            <input type="month" value={selectedMonth} onChange={(event) => setMonth(event.target.value)} />
+            <button onClick={copyPreviousMonth}>Copiar mes anterior</button>
+            <button onClick={addType}>Anadir tipo</button>
+            <button onClick={onSave} disabled={saving}>
+              {saving ? "Guardando" : "Guardar patrimonio"}
+            </button>
+          </div>
         </div>
         <div className="summary-grid compact">
           <Metric label="Valor mercado" value={formatMoney(Number(latest?.["Total valor mercado"] ?? 0))} />
@@ -1404,16 +1720,30 @@ function WealthView({ rows, summary, month, setMonth }: { rows: WealthRow[]; sum
       </section>
       <section className="panel">
         <h2>Detalle del mes</h2>
-        <SimpleTable
+        <EditableTable
           columns={["Tipo", "Liquido", "Fecha", "Aportaciones", "Mercado", "Dividendos", "Rendimiento"]}
-          rows={monthRows.map((row) => [
-            row.Tipo ?? "",
-            row["Liquido / No"] ?? "",
-            row.Fecha ?? "",
-            formatMoney(Number(row["Valor aportaciones"] ?? 0)),
-            formatMoney(Number(row["Valor mercado"] ?? 0)),
-            formatMoney(Number(row["Dividendos recibidos"] ?? 0)),
+          rows={monthRows.map((row, index) => [
+            <input value={String(row.Tipo ?? "")} onChange={(event) => updateMonthRow(index, "Tipo", event.target.value)} />,
+            <input value={String(row["Liquido / No"] ?? "")} onChange={(event) => updateMonthRow(index, "Liquido / No", event.target.value)} />,
+            <input type="date" value={String(row.Fecha ?? "")} onChange={(event) => updateMonthRow(index, "Fecha", event.target.value)} />,
+            <input value={Number(row["Valor aportaciones"] ?? 0)} onChange={(event) => updateMonthRow(index, "Valor aportaciones", event.target.value)} inputMode="decimal" />,
+            <input value={Number(row["Valor mercado"] ?? 0)} onChange={(event) => updateMonthRow(index, "Valor mercado", event.target.value)} inputMode="decimal" />,
+            <input value={Number(row["Dividendos recibidos"] ?? 0)} onChange={(event) => updateMonthRow(index, "Dividendos recibidos", event.target.value)} inputMode="decimal" />,
+            <input value={Number(row.Rendimiento ?? 0)} onChange={(event) => updateMonthRow(index, "Rendimiento", event.target.value)} inputMode="decimal" />,
+          ])}
+        />
+      </section>
+      <section className="panel">
+        <h2>Historico completo importado</h2>
+        <SimpleTable
+          columns={["Mes", "Aportaciones", "Valor mercado", "Rendimiento", "Dividendos", "Incremento mensual"]}
+          rows={summary.map((row) => [
+            row.Mes ?? row.Code ?? "",
+            formatMoney(Number(row["total aportaciones"] ?? 0)),
+            formatMoney(Number(row["Total valor mercado"] ?? 0)),
             formatPercent(Number(row.Rendimiento ?? 0)),
+            formatMoney(Number(row["Dividendos recibidos"] ?? 0)),
+            formatMoney(Number(row["incremento mensual"] ?? 0)),
           ])}
         />
       </section>
@@ -1607,6 +1937,17 @@ function AllocationPanel({ title, rows }: { title: string; rows: Array<{ name: s
 }
 
 function SimpleTable({ columns, rows }: { columns: string[]; rows: Array<Array<React.ReactNode>> }) {
+  const [filters, setFilters] = useState<Record<number, string>>({});
+  const filteredRows = useMemo(
+    () =>
+      rows.filter((row) =>
+        columns.every((_, index) => {
+          const query = (filters[index] ?? "").trim().toLowerCase();
+          return !query || cellText(row[index]).toLowerCase().includes(query);
+        })
+      ),
+    [rows, columns, filters]
+  );
   return (
     <div className="table-wrap">
       <table>
@@ -1616,16 +1957,82 @@ function SimpleTable({ columns, rows }: { columns: string[]; rows: Array<Array<R
               <th key={column}>{column}</th>
             ))}
           </tr>
+          <tr className="filter-row">
+            {columns.map((column, index) => (
+              <th key={`${column}-filter`}>
+                <input
+                  value={filters[index] ?? ""}
+                  onChange={(event) => setFilters((current) => ({ ...current, [index]: event.target.value }))}
+                  placeholder="filtrar"
+                />
+              </th>
+            ))}
+          </tr>
         </thead>
         <tbody>
-          {rows.length === 0 ? (
+          {filteredRows.length === 0 ? (
             <tr>
               <td colSpan={columns.length} className="empty">
                 Sin datos.
               </td>
             </tr>
           ) : (
-            rows.map((row, index) => (
+            filteredRows.map((row, index) => (
+              <tr key={index}>
+                {row.map((cell, cellIndex) => (
+                  <td key={cellIndex}>{cell}</td>
+                ))}
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function EditableTable({ columns, rows }: { columns: string[]; rows: Array<Array<React.ReactNode>> }) {
+  const [filters, setFilters] = useState<Record<number, string>>({});
+  const filteredRows = useMemo(
+    () =>
+      rows.filter((row) =>
+        columns.every((_, index) => {
+          const query = (filters[index] ?? "").trim().toLowerCase();
+          return !query || cellText(row[index]).toLowerCase().includes(query);
+        })
+      ),
+    [rows, columns, filters]
+  );
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column}>{column}</th>
+            ))}
+          </tr>
+          <tr className="filter-row">
+            {columns.map((column, index) => (
+              <th key={`${column}-filter`}>
+                <input
+                  value={filters[index] ?? ""}
+                  onChange={(event) => setFilters((current) => ({ ...current, [index]: event.target.value }))}
+                  placeholder="filtrar"
+                />
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {filteredRows.length === 0 ? (
+            <tr>
+              <td colSpan={columns.length} className="empty">
+                Sin datos.
+              </td>
+            </tr>
+          ) : (
+            filteredRows.map((row, index) => (
               <tr key={index}>
                 {row.map((cell, cellIndex) => (
                   <td key={cellIndex}>{cell}</td>
@@ -1698,6 +2105,105 @@ function groupPositions<T extends { marketValue: number }>(rows: T[], keyFn: (ro
   return [...map.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([name, value]) => ({ name, value, weight: value / total }));
+}
+
+function cloneCash(cash?: LegacyCash): LegacyCash {
+  return {
+    accounts: (cash?.accounts ?? []).map((row) => ({ ...row, values: { ...(row.values ?? {}) }, comments: { ...(row.comments ?? {}) } })),
+    objectives: (cash?.objectives ?? []).map((row) => ({ ...row })),
+    plan: (cash?.plan ?? []).map((row) => ({ ...row, values: { ...(row.values ?? {}) }, comments: { ...(row.comments ?? {}) } })),
+    months: (cash?.months ?? []).map((row) => ({ ...row })),
+    selectedYear: cash?.selectedYear ?? new Date().getFullYear(),
+  };
+}
+
+function ensureCashYear(cash: LegacyCash, year: number) {
+  const labels = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+  cash.months = cash.months ?? [];
+  for (let month = 1; month <= 12; month += 1) {
+    const key = `${year}-${String(month).padStart(2, "0")}`;
+    if (!cash.months.some((row) => row.key === key)) {
+      cash.months.push({ key, label: labels[month - 1], year });
+    }
+  }
+  cash.months.sort((a, b) => a.key.localeCompare(b.key));
+  for (const row of cash.plan ?? []) {
+    row.values = row.values ?? {};
+    row.comments = row.comments ?? {};
+    for (const month of cash.months.filter((item) => item.year === year)) row.values[month.key] = row.values[month.key] ?? 0;
+  }
+  for (const row of cash.accounts ?? []) {
+    row.values = row.values ?? {};
+    row.comments = row.comments ?? {};
+    for (const month of cash.months.filter((item) => item.year === year)) row.values[month.key] = row.values[month.key] ?? 0;
+  }
+  cash.selectedYear = year;
+}
+
+function monthlyObjectiveAdd(row: NonNullable<LegacyCash["objectives"]>[number]) {
+  const target = Number(row.target) || 0;
+  const current = Number(row.current) || 0;
+  const remaining = Math.max(0, target - current);
+  const targetDate = String(row.targetDate ?? "").slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(targetDate)) return Number(row.simulationAdd) || remaining;
+  const now = new Date();
+  const startYear = now.getFullYear();
+  const startMonth = now.getMonth() + 1;
+  const [targetYear, targetMonth] = targetDate.split("-").map(Number);
+  const months = Math.max(1, (targetYear - startYear) * 12 + (targetMonth - startMonth) + 1);
+  return remaining / months;
+}
+
+function monthEndDate(month: string) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  return new Date(year, monthNumber, 0).toISOString().slice(0, 10);
+}
+
+function isWealthNumericField(key: string) {
+  return [
+    "Valor aportaciones",
+    "Valor mercado",
+    "Dividendos recibidos",
+    "Cantidad dividendo",
+    "Yield on cost",
+    "Yield",
+    "Rendimiento",
+    "Dividendos recibidos en el mes",
+    "Mes",
+    "Año",
+  ].includes(key);
+}
+
+function recomputeWealthSummary(rows: WealthRow[]) {
+  const months = [...new Set(rows.map((row) => monthKey(row.Fecha)).filter(Boolean))].sort();
+  return months.map((month, index) => {
+    const monthRows = rows.filter((row) => monthKey(row.Fecha) === month);
+    const aportaciones = monthRows.reduce((acc, row) => acc + Number(row["Valor aportaciones"] ?? 0), 0);
+    const mercado = monthRows.reduce((acc, row) => acc + Number(row["Valor mercado"] ?? 0), 0);
+    const dividendos = monthRows.reduce((acc, row) => acc + Number(row["Dividendos recibidos en el mes"] ?? 0), 0);
+    const previous = index > 0 ? rows.filter((row) => monthKey(row.Fecha) === months[index - 1]).reduce((acc, row) => acc + Number(row["Valor mercado"] ?? 0), 0) : null;
+    return {
+      Code: Number(`${month.slice(5, 7)}${month.slice(0, 4)}`),
+      Mes: monthEndDate(month),
+      "total aportaciones": aportaciones,
+      "Total valor mercado": mercado,
+      Rendimiento: aportaciones ? mercado / aportaciones - 1 : 0,
+      "incremento mensual": previous == null ? null : mercado - previous,
+      "Dividendos recibidos": dividendos,
+      "RTO total": aportaciones ? (mercado + dividendos) / aportaciones - 1 : 0,
+    };
+  });
+}
+
+function cellText(value: React.ReactNode): string {
+  if (value == null || typeof value === "boolean") return "";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map(cellText).join(" ");
+  if (typeof value === "object" && "props" in value) {
+    const props = value.props as { children?: React.ReactNode; value?: string | number };
+    return String(props.value ?? cellText(props.children));
+  }
+  return "";
 }
 
 function latestMonthWithAccountValue(accounts: NonNullable<LegacyCash["accounts"]>) {

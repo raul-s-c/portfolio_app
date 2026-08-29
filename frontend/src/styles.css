@@ -281,6 +281,29 @@ thead th {
   background: #fafbfc;
 }
 
+.filter-row th {
+  top: 39px;
+  background: #f5f7f9;
+}
+
+.filter-row input {
+  min-height: 30px;
+  padding: 5px 7px;
+  font-size: 12px;
+}
+
+td input {
+  min-width: 92px;
+  min-height: 32px;
+  padding: 5px 7px;
+  font-size: 12px;
+}
+
+.comment-input {
+  margin-top: 5px;
+  color: #657184;
+}
+
 tfoot th {
   background: #f1f4f7;
   font-weight: 800;
