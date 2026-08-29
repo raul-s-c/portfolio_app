@@ -520,7 +520,7 @@ myinvestor_resilient_etf
 
 `supabase/migrations/011_report_types_and_asset_tags.sql` crea `asset_tags` y etiqueta automaticamente los ETF abiertos en MyInvestor. Desde la pestana `ETF` tambien se puede marcar o desmarcar manualmente cada ETF asociado a una posicion abierta.
 
-El workflow `.github/workflows/nightly_reports.yml` genera los domingos los dos informes principales (`portfolio_group_analysis` y `etf_resilient_portfolio`) y tambien permite ejecucion manual de cualquiera de los tipos.
+El workflow `.github/workflows/nightly_reports.yml` permite ejecucion manual/ad-hoc de cualquiera de los tipos. De momento no hay busquedas web programadas.
 
 ## Calendario De Dividendos Declarados
 
@@ -553,7 +553,7 @@ POST /api/dividend-calendar/refresh
 
 La pestana `Calendario dividendos` incluye un boton para ejecutar ese endpoint desde la app. El backend debe estar arrancado y `VITE_API_BASE_URL` debe apuntar a el; las claves de Supabase Secret, Brave y OpenAI se quedan siempre en backend o GitHub Actions.
 
-El workflow `.github/workflows/dividend_calendar.yml` corre los domingos a las `08:00 UTC` y tambien permite ejecucion manual.
+El workflow `.github/workflows/dividend_calendar.yml` permite ejecucion manual/ad-hoc. De momento no hay busquedas web programadas.
 
 Nota importante: si un dividendo esta en una moneda distinta de EUR, el calendario lo muestra en su moneda declarada. No convierte divisas automaticamente mientras no haya FX fiable asociado.
 

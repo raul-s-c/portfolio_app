@@ -1,8 +1,6 @@
 name: Nightly reports
 
 on:
-  schedule:
-    - cron: "30 8 * * 0"
   workflow_dispatch:
     inputs:
       report_type:
@@ -46,8 +44,3 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: |
           python scripts/nightly_reports.py --type "${{ github.event.inputs.report_type }}" --focus "${{ github.event.inputs.focus || '' }}"
-      - name: Generate Sunday portfolio reports
-        if: github.event_name == 'schedule'
-        run: |
-          python scripts/nightly_reports.py --type portfolio_group_analysis
-          python scripts/nightly_reports.py --type etf_resilient_portfolio --focus "Cartera ETF MyInvestor resistente para largo plazo, dividendo inflacion +2% y crecimiento esperado +4/6% anual"
