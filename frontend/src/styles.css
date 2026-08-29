@@ -30,6 +30,16 @@ button:disabled {
   cursor: default;
 }
 
+button.ghost {
+  background: #ffffff;
+  color: #172033;
+}
+
+button.danger {
+  border-color: #d7a5a2;
+  color: #ba2f2a;
+}
+
 button.active {
   background: #0d7a45;
   border-color: #0d7a45;
@@ -219,6 +229,12 @@ h2 {
   gap: 8px;
 }
 
+.row-actions {
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
 .message {
   border: 1px solid #cbdaf1;
   border-radius: 8px;
@@ -367,6 +383,21 @@ tfoot th {
   color: #657184;
   font-size: 13px;
   padding: 0 15px 15px;
+}
+
+.muted-inline {
+  color: #657184;
+  font-size: 13px;
+}
+
+.details-panel > summary {
+  cursor: pointer;
+  padding: 15px;
+  font-weight: 750;
+}
+
+.panel-header.soft {
+  background: #fafbfc;
 }
 
 .json-preview {

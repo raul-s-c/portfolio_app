@@ -254,6 +254,7 @@ def build_export(html: str, source_file: Path) -> dict[str, Any]:
         "manual_prices": manual_prices,
         "quote_aliases": quote_aliases,
         "cash": seed.get("cash") or {},
+        "property": seed.get("property") or [],
         "wealth_rows": seed.get("wealthRows") or [],
         "wealth_summary": seed.get("wealthSummary") or [],
         "raw_state_keys": sorted(seed.keys()),

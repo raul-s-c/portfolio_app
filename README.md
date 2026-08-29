@@ -630,6 +630,7 @@ Para uso personal, mono-usuario esta bien, pero conviene anadir columna `owner_i
 | `supabase/migrations/007_open_positions_eur_view.sql` | Posiciones abiertas con valor en EUR |
 | `supabase/migrations/008_personal_app_state.sql` | Estado JSON legacy para cash y patrimonio |
 | `supabase/migrations/009_research_reports.sql` | Informes generados por Brave + OpenAI |
+| `supabase/migrations/010_authenticated_edit_movements.sql` | Edicion y borrado autenticados de movimientos y dividendos |
 | `scripts/load_legacy_app_state.mjs` | Carga cash y patrimonio legacy en Supabase |
 | `scripts/nightly_reports.py` | Generacion periodica de informes |
 | `backend/app/services/asset_resolver.py` | Identidad estable de activos |
@@ -646,7 +647,7 @@ Para recuperar las vistas de `Cash` y `Patrimonio` desde el HTML legacy:
 node scripts/load_legacy_app_state.mjs
 ```
 
-Antes de ese comando hay que ejecutar `supabase/migrations/008_personal_app_state.sql` en el SQL Editor de Supabase.
+Antes de ese comando hay que ejecutar `supabase/migrations/008_personal_app_state.sql` en el SQL Editor de Supabase. Para editar o borrar movimientos y dividendos desde la app, ejecuta tambien `supabase/migrations/010_authenticated_edit_movements.sql`.
 
 ## Estado Final De Este Paquete
 
