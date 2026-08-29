@@ -420,6 +420,215 @@ async function refreshDividendCalendar(payload: Dict) {
   return { status: "ok", positions: positions.length, events: rows.length };
 }
 
+function reportTitle(reportType: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  const labels: Record<string, string> = {
+    portfolio_group_analysis: "Analisis cartera actual por grupo",
+    etf_resilient_portfolio: "Analisis ETF cartera resistente",
+    rebalance_opportunity: "Oportunidades de ponderacion",
+    portfolio_periodic: "Analisis periodico de cartera",
+  };
+  return `${labels[reportType] || "Informe cartera"} - ${today}`;
+}
+
+async function loadReportContext() {
+  const positions = (await supabaseRest("v_open_positions?select=*&order=market_value.desc&limit=250")) as Dict[];
+  const assetIds = uniqueTerms(positions.map((row) => row.asset_id), 500);
+  const brokerIds = uniqueTerms(positions.map((row) => row.broker_id), 500);
+  const assets = assetIds.length
+    ? ((await supabaseRest(`assets?select=id,name,isin,currency,asset_type&id=in.(${inList(assetIds)})`)) as Dict[])
+    : [];
+  const tags = assetIds.length
+    ? ((await supabaseRest(`asset_tags?select=asset_id,tag,notes&asset_id=in.(${inList(assetIds)})`)) as Dict[])
+    : [];
+  const assignments = assetIds.length && brokerIds.length
+    ? ((await supabaseRest(
+        `virtual_portfolio_assignments?select=id,virtual_portfolio_id,asset_id,broker_id,target_weight,notes&asset_id=in.(${inList(assetIds)})`,
+      )) as Dict[])
+    : [];
+  let virtualPortfolios: Dict[] = [];
+  let strategies: Dict[] = [];
+  try {
+    virtualPortfolios = (await supabaseRest("virtual_portfolios?select=id,name,strategy_id,base_currency,notes")) as Dict[];
+    strategies = (await supabaseRest(
+      "portfolio_strategies?select=id,name,objective,target_return_min,target_return_max,target_income_spread_over_inflation",
+    )) as Dict[];
+  } catch {
+    virtualPortfolios = [];
+    strategies = [];
+  }
+  return { positions, assets, tags, assignments, virtual_portfolios: virtualPortfolios, strategies };
+}
+
+function compactReportPositions(context: Dict) {
+  const assets = new Map(((context.assets as Dict[]) || []).map((asset) => [String(asset.id), asset]));
+  const tagsByAsset = new Map<string, string[]>();
+  for (const tag of ((context.tags as Dict[]) || [])) {
+    const key = String(tag.asset_id);
+    tagsByAsset.set(key, [...(tagsByAsset.get(key) || []), String(tag.tag)]);
+  }
+  return ((context.positions as Dict[]) || []).map((position) => {
+    const asset = assets.get(String(position.asset_id)) || {};
+    return {
+      asset_id: position.asset_id,
+      broker_id: position.broker_id,
+      name: position.name || asset.name,
+      type: position.asset_type || asset.asset_type,
+      broker: position.broker,
+      quantity: Number(position.quantity || 0),
+      market_value_eur: Number(position.market_value || 0),
+      cost_basis_eur: Number(position.cost_basis_naive || 0),
+      latent_gain_eur: Number(position.market_value || 0) - Number(position.cost_basis_naive || 0),
+      currency: position.price_currency || asset.currency,
+      isin: asset.isin,
+      tags: tagsByAsset.get(String(position.asset_id)) || [],
+    };
+  });
+}
+
+async function collectReportSearch(reportType: string, positions: Dict[]) {
+  if (!BRAVE_SEARCH_API_KEY) throw new Error("BRAVE_SEARCH_API_KEY missing");
+  const coreQueries =
+    reportType === "etf_resilient_portfolio"
+      ? [
+          "global macro outlook inflation rates bonds equities commodities 2026",
+          "ETF portfolio inflation income distribution long term outlook",
+        ]
+      : [
+          "global market outlook equities bonds ETFs funds 2026",
+          "Europe investor portfolio macro outlook inflation interest rates 2026",
+        ];
+  const names = positions
+    .filter((position) => (reportType !== "etf_resilient_portfolio" ? true : position.type === "etf"))
+    .slice(0, 6)
+    .map((position) => String(position.name || ""))
+    .filter(Boolean);
+  const queries = [...coreQueries, ...names.map((name) => `${name} outlook dividend valuation`) ].slice(0, 8);
+  const searches = [];
+  for (const query of queries) searches.push(await braveSearch(query));
+  return searches;
+}
+
+async function callOpenAIReport(reportType: string, prompt: string) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      instructions:
+        "Eres un analista financiero senior. Escribes en espanol claro, sobrio y accionable. " +
+        "No des asesoramiento personalizado imperativo; separa hechos, inferencias e incertidumbre. " +
+        "Usa Markdown breve con secciones y bullets. No inventes datos que no esten en el contexto.",
+      input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
+      store: false,
+      temperature: 0.2,
+      max_output_tokens: Math.min(OPENAI_REPORT_MAX_OUTPUT_TOKENS, 3500),
+    }),
+    signal: AbortSignal.timeout(45_000),
+  });
+  if (!response.ok) throw new Error(`OpenAI ${response.status}: ${await response.text()}`);
+  const data = await response.json();
+  return asString(data.output_text) || JSON.stringify(data.output || "").slice(0, 6000);
+}
+
+async function generateReport(payload: Dict) {
+  const reportType = asString(payload.report_type) || "portfolio_group_analysis";
+  if (!["portfolio_group_analysis", "etf_resilient_portfolio", "rebalance_opportunity", "portfolio_periodic"].includes(reportType)) {
+    throw new Error("report_type invalido");
+  }
+  const context = await loadReportContext();
+  const positions = compactReportPositions(context);
+  const webContext = await collectReportSearch(reportType, positions);
+  const today = new Date().toISOString().slice(0, 10);
+  const focus =
+    reportType === "etf_resilient_portfolio"
+      ? "Analiza solo la cartera de ETFs marcada como myinvestor_resilient_etf cuando exista. Evalua cada ETF y el conjunto frente al objetivo: cartera resistente a entornos macro, dividendo real inflacion +2% aproximado y crecimiento esperado +4/6% anual."
+      : reportType === "rebalance_opportunity"
+        ? "Detecta desviaciones de peso, concentraciones, carteras virtuales y posibles zonas de ponderacion. Usa balance inicial, pesos objetivo disponibles y cautela con precios."
+        : "Analiza cartera actual por grupos: acciones, ETF y fondos, incluyendo concentracion, moneda, broker, P&G latente y riesgos principales.";
+  const prompt =
+    `${focus}\nFecha: ${today}\n\n` +
+    `Contexto de cartera:\n${JSON.stringify({ ...context, positions }, null, 2)}\n\n` +
+    `Resultados Brave:\n${JSON.stringify(webContext, null, 2)}\n\n` +
+    "Devuelve: 1) resumen ejecutivo, 2) lectura por grupo o ETF, 3) riesgos y oportunidades, 4) datos que faltan para mejorar la precision.";
+  const content = await callOpenAIReport(reportType, prompt);
+  const rows = await supabaseRest("research_reports", {
+    method: "POST",
+    body: JSON.stringify({
+      report_type: reportType,
+      title: reportTitle(reportType),
+      period_start: today,
+      period_end: today,
+      prompt,
+      portfolio_context: { ...context, positions },
+      web_context: webContext,
+      content_markdown: content,
+      model: OPENAI_MODEL,
+    }),
+  });
+  return { status: "ok", report_id: rows?.[0]?.id, title: rows?.[0]?.title || reportTitle(reportType) };
+}
+
+async function yahooPriceHistory(symbol: string, years: number) {
+  const now = Math.floor(Date.now() / 1000);
+  const start = now - Math.max(1, Math.min(20, years)) * 365 * 24 * 60 * 60;
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`);
+  url.searchParams.set("period1", String(start));
+  url.searchParams.set("period2", String(now));
+  url.searchParams.set("interval", "1d");
+  const response = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0 PortfolioPriceHistory/1.0" },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) return [];
+  const data = await response.json();
+  const result = data.chart?.result?.[0] || {};
+  const timestamps = result.timestamp || [];
+  const quotes = result.indicators?.quote?.[0]?.close || [];
+  const currency = normalizeCurrency(result.meta?.currency || "EUR");
+  return timestamps
+    .map((timestamp: number, index: number) => ({
+      priced_on: new Date(Number(timestamp) * 1000).toISOString().slice(0, 10),
+      close_price: Number(quotes[index] || 0),
+      currency,
+      provider: "yahoo",
+      raw_payload: { symbol },
+    }))
+    .filter((row: Dict) => Number(row.close_price) > 0);
+}
+
+async function refreshPriceHistory(payload: Dict) {
+  const years = Number(payload.years || 5);
+  const maxAssets = Number(payload.max_assets || 250);
+  const positions = (await supabaseRest(`v_open_positions?select=asset_id,name,asset_type&order=market_value.desc&limit=${maxAssets}`)) as Dict[];
+  const assetIds = uniqueTerms(positions.map((row) => row.asset_id), maxAssets);
+  if (!assetIds.length) return { status: "ok", assets: 0, rows: 0 };
+  const identifiers = (await supabaseRest(
+    `asset_identifiers?select=asset_id,provider,symbol,is_primary&asset_id=in.(${inList(assetIds)})`,
+  )) as Dict[];
+  const rows = [];
+  for (const assetId of assetIds) {
+    const symbol =
+      identifiers.find((row) => String(row.asset_id) === assetId && row.provider === "yahoo")?.symbol ||
+      identifiers.find((row) => String(row.asset_id) === assetId && row.is_primary)?.symbol;
+    if (!symbol) continue;
+    const history = await yahooPriceHistory(String(symbol), years);
+    rows.push(...history.map((row: Dict) => ({ ...row, asset_id: assetId })));
+  }
+  for (let index = 0; index < rows.length; index += 500) {
+    await supabaseRest("asset_price_history?on_conflict=asset_id,priced_on,provider", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify(rows.slice(index, index + 500)),
+    });
+  }
+  return { status: "ok", assets: assetIds.length, rows: rows.length };
+}
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -428,6 +637,14 @@ Deno.serve(async (request) => {
     if (request.method === "POST" && url.pathname.endsWith("/dividend-calendar/refresh")) {
       const payload = await request.json().catch(() => ({}));
       return jsonResponse(await refreshDividendCalendar(payload));
+    }
+    if (request.method === "POST" && url.pathname.endsWith("/reports/generate")) {
+      const payload = await request.json().catch(() => ({}));
+      return jsonResponse(await generateReport(payload));
+    }
+    if (request.method === "POST" && url.pathname.endsWith("/prices/history/refresh")) {
+      const payload = await request.json().catch(() => ({}));
+      return jsonResponse(await refreshPriceHistory(payload));
     }
     return jsonResponse({ error: "Not found" }, 404);
   } catch (error) {

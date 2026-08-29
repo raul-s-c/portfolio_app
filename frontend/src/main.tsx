@@ -15,6 +15,7 @@ type TabId =
   | "transactions"
   | "dividends"
   | "dividendCalendar"
+  | "virtualPortfolios"
   | "assets"
   | "etf"
   | "cash"
@@ -167,6 +168,32 @@ type ResearchReport = {
   created_at: string;
 };
 
+type PortfolioStrategy = {
+  id: string;
+  name: string;
+  objective: string | null;
+  target_return_min: number | null;
+  target_return_max: number | null;
+  target_income_spread_over_inflation: number | null;
+};
+
+type VirtualPortfolio = {
+  id: string;
+  name: string;
+  strategy_id: string | null;
+  base_currency: string;
+  notes: string | null;
+};
+
+type VirtualPortfolioAssignment = {
+  id: string;
+  virtual_portfolio_id: string;
+  asset_id: string;
+  broker_id: string;
+  target_weight: number | null;
+  notes: string | null;
+};
+
 type LegacyCash = {
   accounts?: Array<{ name: string; values?: Record<string, number>; comments?: Record<string, string> }>;
   objectives?: Array<{ name: string; target: number; current: number; targetDate?: string; simulationAdd?: number }>;
@@ -228,6 +255,7 @@ type DividendSection = "analysis" | "evolution" | "assets" | "edit";
 type WealthSection = "period" | "chart" | "history";
 type DividendAggregate = { name: string; gross: number; tax: number; net: number; count: number; weight: number };
 type CalendarAggregate = { name: string; currency: string; expected: number; count: number; averageConfidence: number; weight: number };
+type ReportType = ResearchReport["report_type"];
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
@@ -235,6 +263,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "transactions", label: "Movimientos" },
   { id: "dividends", label: "Dividendos" },
   { id: "dividendCalendar", label: "Calendario dividendos" },
+  { id: "virtualPortfolios", label: "Carteras" },
   { id: "assets", label: "Mapeos" },
   { id: "etf", label: "ETF" },
   { id: "cash", label: "Cash" },
@@ -297,6 +326,9 @@ function App() {
   const [portfolioSnapshots, setPortfolioSnapshots] = useState<PortfolioSnapshot[]>([]);
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
   const [reports, setReports] = useState<ResearchReport[]>([]);
+  const [strategies, setStrategies] = useState<PortfolioStrategy[]>([]);
+  const [virtualPortfolios, setVirtualPortfolios] = useState<VirtualPortfolio[]>([]);
+  const [virtualAssignments, setVirtualAssignments] = useState<VirtualPortfolioAssignment[]>([]);
   const [legacyAppState, setLegacyAppState] = useState<LegacyAppState | null>(null);
   const [legacyStateMissing, setLegacyStateMissing] = useState(false);
   const [assetForm, setAssetForm] = useState<AssetForm>(DEFAULT_ASSET_FORM);
@@ -305,6 +337,8 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [savingState, setSavingState] = useState(false);
   const [refreshingDividendCalendar, setRefreshingDividendCalendar] = useState(false);
+  const [generatingReportType, setGeneratingReportType] = useState<ReportType | "">("");
+  const [refreshingPriceHistory, setRefreshingPriceHistory] = useState(false);
   const [message, setMessage] = useState("");
   const [positionSearch, setPositionSearch] = useState("");
   const [movementSearch, setMovementSearch] = useState("");
@@ -359,6 +393,9 @@ function App() {
     setPortfolioSnapshots([]);
     setQueue([]);
     setReports([]);
+    setStrategies([]);
+    setVirtualPortfolios([]);
+    setVirtualAssignments([]);
     setLegacyAppState(null);
   }
 
@@ -379,6 +416,9 @@ function App() {
       queueResult,
       appStateResult,
       reportsResult,
+      strategiesResult,
+      virtualPortfoliosResult,
+      virtualAssignmentsResult,
     ] = await Promise.all([
       supabase.from("v_open_positions").select("*").order("name"),
       supabase.from("assets").select("id,asset_type,name,isin,currency").order("name"),
@@ -405,6 +445,15 @@ function App() {
         .select("id,report_type,title,period_start,period_end,content_markdown,model,created_at")
         .order("created_at", { ascending: false })
         .limit(50),
+      supabase
+        .from("portfolio_strategies")
+        .select("id,name,objective,target_return_min,target_return_max,target_income_spread_over_inflation")
+        .order("name"),
+      supabase.from("virtual_portfolios").select("id,name,strategy_id,base_currency,notes").order("name"),
+      supabase
+        .from("virtual_portfolio_assignments")
+        .select("id,virtual_portfolio_id,asset_id,broker_id,target_weight,notes")
+        .order("created_at", { ascending: false }),
     ]);
 
     const coreError =
@@ -450,6 +499,9 @@ function App() {
     if (!reportsResult.error) {
       setReports((reportsResult.data ?? []) as ResearchReport[]);
     }
+    setStrategies(strategiesResult.error ? [] : ((strategiesResult.data ?? []) as PortfolioStrategy[]));
+    setVirtualPortfolios(virtualPortfoliosResult.error ? [] : ((virtualPortfoliosResult.data ?? []) as VirtualPortfolio[]));
+    setVirtualAssignments(virtualAssignmentsResult.error ? [] : ((virtualAssignmentsResult.data ?? []) as VirtualPortfolioAssignment[]));
     setLoading(false);
   }
 
@@ -490,6 +542,124 @@ function App() {
     } finally {
       setRefreshingDividendCalendar(false);
     }
+  }
+
+  async function generateReport(reportType: ReportType) {
+    if (!session) {
+      setMessage("Entra con tu email antes de generar informes.");
+      return;
+    }
+    setGeneratingReportType(reportType);
+    setMessage("Generando informe con Brave + OpenAI...");
+    try {
+      const response = await fetch(`${apiBaseUrl}/reports/generate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ report_type: reportType }),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `HTTP ${response.status}`);
+      }
+      const result = await response.json();
+      await loadDashboardData();
+      setMessage(`Informe generado: ${result.title ?? reportType}.`);
+      setActiveTab("reports");
+    } catch (error) {
+      setMessage(`No he podido generar el informe. ${error instanceof Error ? error.message : ""}`);
+    } finally {
+      setGeneratingReportType("");
+    }
+  }
+
+  async function refreshPriceHistory() {
+    if (!session) {
+      setMessage("Entra con tu email antes de actualizar historicos.");
+      return;
+    }
+    setRefreshingPriceHistory(true);
+    setMessage("Actualizando historico de precios desde backend remoto...");
+    try {
+      const response = await fetch(`${apiBaseUrl}/prices/history/refresh`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ years: 5, max_assets: 250 }),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `HTTP ${response.status}`);
+      }
+      const result = await response.json();
+      await loadDashboardData();
+      setMessage(`Historico actualizado: ${result.rows ?? 0} precios para ${result.assets ?? 0} activos.`);
+    } catch (error) {
+      setMessage(`No he podido actualizar historicos. ${error instanceof Error ? error.message : ""}`);
+    } finally {
+      setRefreshingPriceHistory(false);
+    }
+  }
+
+  async function createVirtualPortfolio(name: string, strategyId: string) {
+    if (!session) {
+      setMessage("Entra con tu email antes de guardar carteras.");
+      return;
+    }
+    const cleanName = name.trim();
+    if (!cleanName) {
+      setMessage("Pon un nombre a la cartera virtual.");
+      return;
+    }
+    const { error } = await supabase.from("virtual_portfolios").insert({
+      name: cleanName,
+      strategy_id: strategyId || null,
+      base_currency: "EUR",
+      notes: "Cartera virtual creada desde la app.",
+    });
+    if (error) {
+      setMessage(friendlySupabaseError(error.message));
+      return;
+    }
+    setMessage("Cartera virtual creada.");
+    await loadDashboardData();
+  }
+
+  async function saveVirtualAssignment(assetId: string, brokerId: string, virtualPortfolioId: string, targetWeight: string, notes: string) {
+    if (!session) {
+      setMessage("Entra con tu email antes de asignar activos.");
+      return;
+    }
+    if (!virtualPortfolioId) {
+      const { error } = await supabase.from("virtual_portfolio_assignments").delete().eq("asset_id", assetId).eq("broker_id", brokerId);
+      if (error) {
+        setMessage(friendlySupabaseError(error.message));
+        return;
+      }
+      setMessage("Asignacion eliminada.");
+      await loadDashboardData();
+      return;
+    }
+    const { error } = await supabase.from("virtual_portfolio_assignments").upsert(
+      {
+        asset_id: assetId,
+        broker_id: brokerId,
+        virtual_portfolio_id: virtualPortfolioId,
+        target_weight: targetWeight.trim() ? parseLocaleNumber(targetWeight) / 100 : null,
+        notes: notes.trim() || null,
+      },
+      { onConflict: "asset_id,broker_id" }
+    );
+    if (error) {
+      setMessage(friendlySupabaseError(error.message));
+      return;
+    }
+    setMessage("Asignacion guardada.");
+    await loadDashboardData();
   }
 
   async function createAsset(event: FormEvent) {
@@ -958,6 +1128,8 @@ function App() {
           queueCount={queue.length}
           onRefresh={loadDashboardData}
           loading={loading}
+          onGenerateReport={generateReport}
+          generatingReportType={generatingReportType}
         />
       )}
       {activeTab === "positions" && (
@@ -1009,7 +1181,19 @@ function App() {
         <DividendCalendarView
           events={dividendCalendar}
           onRefresh={refreshDividendCalendar}
+          onGenerateReport={generateReport}
           refreshing={refreshingDividendCalendar}
+          generatingReportType={generatingReportType}
+        />
+      )}
+      {activeTab === "virtualPortfolios" && (
+        <VirtualPortfoliosView
+          positions={enrichedPositions}
+          strategies={strategies}
+          virtualPortfolios={virtualPortfolios}
+          assignments={virtualAssignments}
+          onCreatePortfolio={createVirtualPortfolio}
+          onSaveAssignment={saveVirtualAssignment}
         />
       )}
       {activeTab === "assets" && (
@@ -1075,10 +1259,14 @@ function App() {
           assetById={assetById}
           brokerById={brokerById}
           primarySymbols={primarySymbols}
+          onRefreshHistory={refreshPriceHistory}
+          refreshingHistory={refreshingPriceHistory}
         />
       )}
       {activeTab === "importer" && <ImporterView />}
-      {activeTab === "reports" && <ReportsView reports={reports} />}
+      {activeTab === "reports" && (
+        <ReportsView reports={reports} onGenerateReport={generateReport} generatingReportType={generatingReportType} />
+      )}
       {activeTab === "queue" && <QueueView queue={queue} />}
       {activeTab === "backup" && (
         <BackupView
@@ -1112,12 +1300,16 @@ function DashboardView({
   queueCount,
   onRefresh,
   loading,
+  onGenerateReport,
+  generatingReportType,
 }: {
   positions: Array<Position & { symbol: string; marketValue: number; costBasis: number; latentGain: number; dailyGain: number }>;
   totals: { marketValue: number; costBasis: number; dailyGain: number; dividendsNet: number; latentGain: number };
   queueCount: number;
   onRefresh: () => void;
   loading: boolean;
+  onGenerateReport: (type: ReportType) => void;
+  generatingReportType: ReportType | "";
 }) {
   const byType = groupPositions(positions, (row) => assetTypeLabel(row.asset_type));
   const byBroker = groupPositions(positions, (row) => row.broker);
@@ -1126,6 +1318,21 @@ function DashboardView({
   const etfTotal = etfPositions.reduce((acc, row) => acc + row.marketValue, 0);
   return (
     <>
+      <section className="command-center">
+        <div>
+          <span className="kicker">Control financiero</span>
+          <h2>Tu cartera, lista para decidir</h2>
+          <p>Filtra posiciones, genera informes y separa estrategias sin perder la trazabilidad por activo y broker.</p>
+        </div>
+        <div className="inline-actions">
+          <button onClick={() => onGenerateReport("portfolio_group_analysis")} disabled={Boolean(generatingReportType)}>
+            {generatingReportType === "portfolio_group_analysis" ? "Generando..." : "Informe por grupos"}
+          </button>
+          <button className="ghost" onClick={() => onGenerateReport("etf_resilient_portfolio")} disabled={Boolean(generatingReportType)}>
+            {generatingReportType === "etf_resilient_portfolio" ? "Generando..." : "Informe ETF"}
+          </button>
+        </div>
+      </section>
       <section className="panel">
         <div className="panel-header">
           <h2>Vista general</h2>
@@ -1663,15 +1870,31 @@ function DividendsView({
 function DividendCalendarView({
   events,
   onRefresh,
+  onGenerateReport,
   refreshing,
+  generatingReportType,
 }: {
   events: DividendCalendarEvent[];
   onRefresh: () => void;
+  onGenerateReport: (type: ReportType) => void;
   refreshing: boolean;
+  generatingReportType: ReportType | "";
 }) {
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
+  const [calendarType, setCalendarType] = useState("");
+  const [currencyFilter, setCurrencyFilter] = useState("");
   const upcoming = events
     .filter((event) => event.payment_date || event.ex_date)
     .sort((a, b) => String(a.payment_date ?? a.ex_date).localeCompare(String(b.payment_date ?? b.ex_date)));
+  const filteredEvents = upcoming.filter((event) => {
+    const eventMonth = String(event.payment_date ?? event.ex_date).slice(0, 7);
+    return (
+      eventMonth === month &&
+      (!calendarType || event.asset_type === calendarType) &&
+      (!currencyFilter || normalizeCurrency(event.currency) === currencyFilter)
+    );
+  });
   const expectedEur = upcoming
     .filter((event) => normalizeCurrency(event.currency) === "EUR")
     .reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
@@ -1686,27 +1909,124 @@ function DividendCalendarView({
     upcoming,
     (event) => `${event.symbol ?? ""} ${event.asset_name ?? ""}`.trim() || "Sin activo"
   );
+  const currencies = [...new Set(upcoming.map((event) => normalizeCurrency(event.currency)))].sort();
+  const calendarDays = monthCalendarDays(month);
+  const eventsByDate = new Map<string, DividendCalendarEvent[]>();
+  for (const event of filteredEvents) {
+    const date = String(event.payment_date ?? event.ex_date);
+    eventsByDate.set(date, [...(eventsByDate.get(date) ?? []), event]);
+  }
+  const selectedEvents = eventsByDate.get(selectedDate) ?? [];
+  const monthTotal = filteredEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
+  const selectedTotal = selectedEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
   return (
     <>
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Calendario de dividendos</h2>
-          <div className="inline-actions">
-            <span className="muted-inline">Backend: Brave + OpenAI</span>
-            <button onClick={onRefresh} disabled={refreshing}>
-              {refreshing ? "Actualizando..." : "Actualizar calendario"}
-            </button>
-          </div>
+      <section className="command-center calendar-hero">
+        <div>
+          <span className="kicker">Dividendos declarados</span>
+          <h2>Calendario interactivo</h2>
+          <p>Eventos previstos por fecha, importe esperado y confianza de la fuente. La busqueda web se lanza solo cuando tu lo pides.</p>
         </div>
+        <div className="inline-actions">
+          <button onClick={onRefresh} disabled={refreshing}>
+            {refreshing ? "Actualizando..." : "Actualizar calendario"}
+          </button>
+          <button className="ghost" onClick={() => onGenerateReport("etf_resilient_portfolio")} disabled={Boolean(generatingReportType)}>
+            {generatingReportType === "etf_resilient_portfolio" ? "Generando..." : "Generar informe ETF"}
+          </button>
+        </div>
+      </section>
+      <section className="panel">
         <div className="summary-grid compact">
           <Metric label="Esperado EUR" value={formatMoney(expectedEur)} />
           <Metric label="Alta confianza EUR" value={formatMoney(confirmedTotal)} />
           <Metric label="Eventos" value={upcoming.length} />
           <Metric label="Confianza media" value={formatPercent(averageConfidence)} />
         </div>
-        <p className="muted">
-          El calendario calcula importe esperado como cantidad en cartera por dividendo declarado por accion/participacion. Hay {nonEurEvents} eventos en moneda distinta de EUR; revisa siempre fuente y confianza antes de darlo por definitivo.
-        </p>
+      </section>
+      <section className="calendar-layout">
+        <aside className="panel control-rail">
+          <h2>Vista</h2>
+          <label>
+            Mes
+            <input type="month" value={month} onChange={(event) => setMonth(event.target.value)} />
+          </label>
+          <label>
+            Tipo
+            <select value={calendarType} onChange={(event) => setCalendarType(event.target.value)}>
+              <option value="">Acciones y ETF</option>
+              <option value="stock">Acciones</option>
+              <option value="etf">ETF</option>
+            </select>
+          </label>
+          <label>
+            Moneda
+            <select value={currencyFilter} onChange={(event) => setCurrencyFilter(event.target.value)}>
+              <option value="">Todas</option>
+              {currencies.map((currency) => (
+                <option key={currency} value={currency}>
+                  {currency}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="rail-metrics">
+            <Metric label="Mes visible" value={formatPlainMoney(monthTotal, currencyFilter || "EUR")} />
+            <Metric label="Dia elegido" value={formatPlainMoney(selectedTotal, currencyFilter || "EUR")} />
+          </div>
+          <p className="muted no-pad">{nonEurEvents} eventos no EUR. Revisa fuente y confianza antes de darlo por definitivo.</p>
+        </aside>
+        <section className="panel calendar-board">
+          <div className="calendar-weekdays">
+            {["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"].map((day) => (
+              <span key={day}>{day}</span>
+            ))}
+          </div>
+          <div className="calendar-grid">
+            {calendarDays.map((day) => {
+              const dayEvents = eventsByDate.get(day.date) ?? [];
+              const isSelected = day.date === selectedDate;
+              return (
+                <button
+                  type="button"
+                  key={day.date}
+                  className={`calendar-cell ${day.inMonth ? "" : "muted-day"} ${isSelected ? "selected" : ""}`}
+                  onClick={() => setSelectedDate(day.date)}
+                >
+                  <span className="day-number">{day.label}</span>
+                  <strong>{dayEvents.length ? formatPlainMoney(dayEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0), dayEvents[0].currency) : ""}</strong>
+                  <div className="calendar-chips">
+                    {dayEvents.slice(0, 3).map((event) => (
+                      <span className={`calendar-chip ${event.asset_type}`} key={event.id}>
+                        {event.symbol ?? event.asset_name} {formatPlainMoney(event.expected_gross_amount, event.currency)}
+                      </span>
+                    ))}
+                    {dayEvents.length > 3 && <span className="calendar-chip more">+{dayEvents.length - 3}</span>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+        <aside className="panel day-detail">
+          <h2>{new Date(`${selectedDate}T00:00:00`).toLocaleDateString("es-ES", { weekday: "long", day: "2-digit", month: "long" })}</h2>
+          {selectedEvents.length === 0 ? (
+            <p className="empty">Sin cobros previstos este dia.</p>
+          ) : (
+            selectedEvents.map((event) => (
+              <article key={event.id} className="event-card">
+                <span>{assetTypeLabel(event.asset_type)} - {event.broker}</span>
+                <strong>{event.symbol ?? event.asset_name}</strong>
+                <p>{formatPlainMoney(event.expected_gross_amount, event.currency)} · conf. {formatPercent(event.confidence)}</p>
+                {event.source_url && (
+                  <a href={event.source_url} target="_blank" rel="noreferrer">
+                    fuente
+                  </a>
+                )}
+              </article>
+            ))
+          )}
+        </aside>
       </section>
       <section className="panel">
         <h2>Proximos cobros estimados</h2>
@@ -2565,17 +2885,26 @@ function SnapshotsView({
   assetById,
   brokerById,
   primarySymbols,
+  onRefreshHistory,
+  refreshingHistory,
 }: {
   portfolioSnapshots: PortfolioSnapshot[];
   priceSnapshots: PriceSnapshot[];
   assetById: Map<string, Asset>;
   brokerById: Map<string, Broker>;
   primarySymbols: Map<string, string>;
+  onRefreshHistory: () => void;
+  refreshingHistory: boolean;
 }) {
   return (
     <>
       <section className="panel">
-        <h2>Snapshots de cartera</h2>
+        <div className="panel-header">
+          <h2>Snapshots de cartera</h2>
+          <button onClick={onRefreshHistory} disabled={refreshingHistory}>
+            {refreshingHistory ? "Actualizando..." : "Actualizar historico 5Y"}
+          </button>
+        </div>
         <SimpleTable
           columns={["Fecha", "Ticker", "Activo", "Broker", "Cantidad", "Coste", "Mercado", "P&G", "Moneda"]}
           rows={portfolioSnapshots.map((row) => [
@@ -2627,7 +2956,160 @@ function ImporterView() {
   );
 }
 
-function ReportsView({ reports }: { reports: ResearchReport[] }) {
+function VirtualPortfoliosView({
+  positions,
+  strategies,
+  virtualPortfolios,
+  assignments,
+  onCreatePortfolio,
+  onSaveAssignment,
+}: {
+  positions: Array<Position & { symbol: string; marketValue: number; costBasis: number; latentGain: number; dailyGain: number }>;
+  strategies: PortfolioStrategy[];
+  virtualPortfolios: VirtualPortfolio[];
+  assignments: VirtualPortfolioAssignment[];
+  onCreatePortfolio: (name: string, strategyId: string) => void;
+  onSaveAssignment: (assetId: string, brokerId: string, virtualPortfolioId: string, targetWeight: string, notes: string) => void;
+}) {
+  const [newName, setNewName] = useState("");
+  const [newStrategyId, setNewStrategyId] = useState(strategies[0]?.id ?? "");
+  const [drafts, setDrafts] = useState<Record<string, { portfolioId: string; targetWeight: string; notes: string }>>({});
+
+  useEffect(() => {
+    setDrafts(
+      Object.fromEntries(
+        positions.map((position) => {
+          const assignment = assignments.find((row) => row.asset_id === position.asset_id && row.broker_id === position.broker_id);
+          return [
+            `${position.asset_id}:${position.broker_id}`,
+            {
+              portfolioId: assignment?.virtual_portfolio_id ?? "",
+              targetWeight: assignment?.target_weight != null ? formatInputNumber(toNumber(assignment.target_weight) * 100) : "",
+              notes: assignment?.notes ?? "",
+            },
+          ];
+        })
+      )
+    );
+  }, [positions, assignments]);
+
+  const strategyById = useMemo(() => new Map(strategies.map((strategy) => [strategy.id, strategy])), [strategies]);
+  const portfolioSummary = virtualPortfolios.map((portfolio) => {
+    const members = positions.filter((position) =>
+      assignments.some(
+        (assignment) =>
+          assignment.virtual_portfolio_id === portfolio.id &&
+          assignment.asset_id === position.asset_id &&
+          assignment.broker_id === position.broker_id
+      )
+    );
+    const marketValue = members.reduce((acc, row) => acc + row.marketValue, 0);
+    const costBasis = members.reduce((acc, row) => acc + row.costBasis, 0);
+    return { portfolio, members, marketValue, costBasis, latentGain: marketValue - costBasis };
+  });
+
+  return (
+    <>
+      <section className="command-center">
+        <div>
+          <span className="kicker">Estrategias separadas</span>
+          <h2>Carteras virtuales</h2>
+          <p>Asigna cada posicion por activo y broker a una cartera vinculada a una estrategia. Esto deja el dato listo para informes, rentabilidad y rebalanceos por contexto.</p>
+        </div>
+      </section>
+      <section className="three-grid">
+        {portfolioSummary.map(({ portfolio, members, marketValue, costBasis, latentGain }) => {
+          const strategy = portfolio.strategy_id ? strategyById.get(portfolio.strategy_id) : null;
+          return (
+            <article className="portfolio-card" key={portfolio.id}>
+              <span>{strategy?.name ?? "Sin estrategia"}</span>
+              <strong>{portfolio.name}</strong>
+              <p>{strategy?.objective ?? portfolio.notes}</p>
+              <div className="portfolio-card-grid">
+                <Metric label="Valor" value={formatMoney(marketValue)} />
+                <Metric label="P&G" value={formatMoney(latentGain)} tone={latentGain >= 0 ? "good" : "bad"} />
+                <Metric label="Rent." value={formatPercent(costBasis ? latentGain / costBasis : 0)} tone={latentGain >= 0 ? "good" : "bad"} />
+                <Metric label="Posiciones" value={members.length} />
+              </div>
+            </article>
+          );
+        })}
+      </section>
+      <form
+        className="panel form-panel"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onCreatePortfolio(newName, newStrategyId);
+          setNewName("");
+        }}
+      >
+        <h2>Nueva cartera virtual</h2>
+        <div className="form-row">
+          <label>
+            Nombre
+            <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Ej. Dividendos USA" />
+          </label>
+          <label>
+            Estrategia
+            <select value={newStrategyId} onChange={(event) => setNewStrategyId(event.target.value)}>
+              <option value="">Sin estrategia</option>
+              {strategies.map((strategy) => (
+                <option key={strategy.id} value={strategy.id}>
+                  {strategy.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <button>Crear cartera</button>
+      </form>
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Asignacion por posicion</h2>
+          <span className="muted-inline">{positions.length} posiciones abiertas</span>
+        </div>
+        <EditableTable
+          columns={["Ticker", "Activo", "Broker", "Valor EUR", "Cartera virtual", "Peso objetivo", "Nota", ""]}
+          totalColumns={[{ index: 3, format: "money" }]}
+          rows={positions.map((position) => {
+            const key = `${position.asset_id}:${position.broker_id}`;
+            const draft = drafts[key] ?? { portfolioId: "", targetWeight: "", notes: "" };
+            const setDraft = (patch: Partial<typeof draft>) => setDrafts((current) => ({ ...current, [key]: { ...draft, ...patch } }));
+            return [
+              position.symbol,
+              position.name,
+              position.broker,
+              formatMoney(position.marketValue),
+              <select value={draft.portfolioId} onChange={(event) => setDraft({ portfolioId: event.target.value })}>
+                <option value="">Sin asignar</option>
+                {virtualPortfolios.map((portfolio) => (
+                  <option key={portfolio.id} value={portfolio.id}>
+                    {portfolio.name}
+                  </option>
+                ))}
+              </select>,
+              <input value={draft.targetWeight} onChange={(event) => setDraft({ targetWeight: event.target.value })} inputMode="decimal" placeholder="%" />,
+              <input value={draft.notes} onChange={(event) => setDraft({ notes: event.target.value })} />,
+              <button onClick={() => onSaveAssignment(position.asset_id, position.broker_id, draft.portfolioId, draft.targetWeight, draft.notes)}>
+                Guardar
+              </button>,
+            ];
+          })}
+        />
+      </section>
+    </>
+  );
+}
+
+function ReportsView({
+  reports,
+  onGenerateReport,
+  generatingReportType,
+}: {
+  reports: ResearchReport[];
+  onGenerateReport: (type: ReportType) => void;
+  generatingReportType: ReportType | "";
+}) {
   const periodic = reports.filter((report) => report.report_type === "portfolio_periodic");
   const rebalance = reports.filter((report) => report.report_type === "rebalance_opportunity");
   const groupAnalysis = reports.filter((report) => report.report_type === "portfolio_group_analysis");
@@ -2649,9 +3131,17 @@ function ReportsView({ reports }: { reports: ResearchReport[] }) {
           <Metric label="Busquedas" value="Brave" />
           <Metric label="Razonamiento" value="OpenAI" />
         </div>
-        <p className="muted">
-          Los informes se generan desde backend/GitHub Actions con Brave Search para contexto web y OpenAI para el analisis. La app solo lee los resultados guardados.
-        </p>
+        <div className="report-actions">
+          <button onClick={() => onGenerateReport("portfolio_group_analysis")} disabled={Boolean(generatingReportType)}>
+            {generatingReportType === "portfolio_group_analysis" ? "Generando..." : "Generar analisis por grupo"}
+          </button>
+          <button className="ghost" onClick={() => onGenerateReport("etf_resilient_portfolio")} disabled={Boolean(generatingReportType)}>
+            {generatingReportType === "etf_resilient_portfolio" ? "Generando..." : "Generar analisis ETF"}
+          </button>
+          <button className="ghost" onClick={() => onGenerateReport("rebalance_opportunity")} disabled={Boolean(generatingReportType)}>
+            {generatingReportType === "rebalance_opportunity" ? "Generando..." : "Rebalanceo"}
+          </button>
+        </div>
       </section>
       <section className="panel">
         <h2>Ultimos informes</h2>
@@ -3328,6 +3818,25 @@ function monthKey(value: unknown) {
   if (!match) return "";
   if (match[1].length === 4) return `${match[1]}-${match[2]}`;
   return `${match[2]}-${match[1].padStart(2, "0")}`;
+}
+
+function monthCalendarDays(month: string) {
+  const [yearRaw, monthRaw] = month.split("-").map(Number);
+  const today = new Date();
+  const year = Number.isFinite(yearRaw) ? yearRaw : today.getFullYear();
+  const monthIndex = Number.isFinite(monthRaw) ? monthRaw - 1 : today.getMonth();
+  const first = new Date(year, monthIndex, 1);
+  const startOffset = (first.getDay() + 6) % 7;
+  const start = new Date(year, monthIndex, 1 - startOffset);
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    return {
+      date: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`,
+      label: String(date.getDate()),
+      inMonth: date.getMonth() === monthIndex,
+    };
+  });
 }
 
 function assetTypeLabel(value: string) {
