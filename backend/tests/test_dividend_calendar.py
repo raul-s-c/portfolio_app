@@ -1,9 +1,11 @@
 from app.services.dividend_calendar import (
     calculate_expected_amount,
     clean_date,
+    dividend_calendar_query_variants,
     normalize_currency,
     normalize_event,
     parse_json_response,
+    position_search_terms,
 )
 
 
@@ -43,3 +45,32 @@ def test_clean_date_and_currency_fallbacks():
     assert clean_date("2026-12-01") == "2026-12-01"
     assert clean_date("12/01/2026") is None
     assert normalize_currency("EURO") == "EUR"
+
+
+def test_etf_queries_include_isin_and_distribution_language():
+    position = {
+        "asset_type": "etf",
+        "symbol": "VHYL",
+        "name": "Vanguard FTSE All-World High Dividend Yield UCITS ETF",
+        "isin": "IE00B8GKDB10",
+        "identifiers": [{"symbol": "VHYL.AS"}, {"symbol": "VGWD.DE"}],
+    }
+
+    queries = dividend_calendar_query_variants(position, request=type("Request", (), {"focus": None})())
+
+    assert any("IE00B8GKDB10" in query for query in queries)
+    assert any("distribution" in query for query in queries)
+    assert any("justetf.com" in query for query in queries)
+
+
+def test_position_search_terms_deduplicates_identifiers():
+    terms = position_search_terms(
+        {
+            "symbol": "IQQJ",
+            "isin": "IE00B1FZS350",
+            "name": "iShares MSCI Japan",
+            "identifiers": [{"symbol": "IQQJ"}, {"symbol": "IJPN.L"}],
+        }
+    )
+
+    assert terms["symbols"] == ["IQQJ", "IJPN.L"]

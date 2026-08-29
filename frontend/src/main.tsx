@@ -5,6 +5,7 @@ import "./styles.css";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL ?? "";
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 const supabase = window.__portfolioSupabase ?? createClient(supabaseUrl, supabaseAnonKey);
 window.__portfolioSupabase = supabase;
 
@@ -303,6 +304,7 @@ function App() {
   const [dividendForm, setDividendForm] = useState<DividendForm>(DEFAULT_DIVIDEND_FORM);
   const [loading, setLoading] = useState(false);
   const [savingState, setSavingState] = useState(false);
+  const [refreshingDividendCalendar, setRefreshingDividendCalendar] = useState(false);
   const [message, setMessage] = useState("");
   const [positionSearch, setPositionSearch] = useState("");
   const [movementSearch, setMovementSearch] = useState("");
@@ -449,6 +451,42 @@ function App() {
       setReports((reportsResult.data ?? []) as ResearchReport[]);
     }
     setLoading(false);
+  }
+
+  async function refreshDividendCalendar() {
+    if (!session) {
+      setMessage("Entra con tu email antes de actualizar el calendario.");
+      return;
+    }
+    setRefreshingDividendCalendar(true);
+    setMessage("Actualizando calendario de dividendos con Brave + OpenAI...");
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/dividend-calendar/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          max_positions: 120,
+          max_web_results: 8,
+          focus:
+            "prioriza fuentes oficiales, issuer ETF page, justETF, dividend announcements, declared distributions and payment date",
+        }),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `HTTP ${response.status}`);
+      }
+      const result = await response.json();
+      await loadDashboardData();
+      setMessage(`Calendario actualizado: ${result.events ?? 0} eventos para ${result.positions ?? 0} posiciones.`);
+    } catch (error) {
+      setMessage(
+        `No he podido actualizar el calendario. Comprueba que el backend esta arrancado en ${apiBaseUrl}. ${
+          error instanceof Error ? error.message : ""
+        }`
+      );
+    } finally {
+      setRefreshingDividendCalendar(false);
+    }
   }
 
   async function createAsset(event: FormEvent) {
@@ -964,7 +1002,13 @@ function App() {
           loading={loading}
         />
       )}
-      {activeTab === "dividendCalendar" && <DividendCalendarView events={dividendCalendar} />}
+      {activeTab === "dividendCalendar" && (
+        <DividendCalendarView
+          events={dividendCalendar}
+          onRefresh={refreshDividendCalendar}
+          refreshing={refreshingDividendCalendar}
+        />
+      )}
       {activeTab === "assets" && (
         <AssetsView
           assets={filteredAssets}
@@ -1613,7 +1657,15 @@ function DividendsView({
   );
 }
 
-function DividendCalendarView({ events }: { events: DividendCalendarEvent[] }) {
+function DividendCalendarView({
+  events,
+  onRefresh,
+  refreshing,
+}: {
+  events: DividendCalendarEvent[];
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
   const upcoming = events
     .filter((event) => event.payment_date || event.ex_date)
     .sort((a, b) => String(a.payment_date ?? a.ex_date).localeCompare(String(b.payment_date ?? b.ex_date)));
@@ -1636,7 +1688,12 @@ function DividendCalendarView({ events }: { events: DividendCalendarEvent[] }) {
       <section className="panel">
         <div className="panel-header">
           <h2>Calendario de dividendos</h2>
-          <span className="muted-inline">Se actualiza con backend: Brave + OpenAI</span>
+          <div className="inline-actions">
+            <span className="muted-inline">Backend: Brave + OpenAI</span>
+            <button onClick={onRefresh} disabled={refreshing}>
+              {refreshing ? "Actualizando..." : "Actualizar calendario"}
+            </button>
+          </div>
         </div>
         <div className="summary-grid compact">
           <Metric label="Esperado EUR" value={formatMoney(expectedEur)} />

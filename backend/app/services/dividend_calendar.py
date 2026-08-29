@@ -31,6 +31,14 @@ def dividend_calendar_context(client: Client, max_positions: int = 80) -> dict[s
         .data
     )
     asset_ids = [row["asset_id"] for row in positions]
+    assets = (
+        client.table("assets")
+        .select("id,isin,currency,name,asset_type")
+        .in_("id", asset_ids or ["00000000-0000-0000-0000-000000000000"])
+        .execute()
+        .data
+    )
+    assets_by_id = {row["id"]: row for row in assets}
     identifiers = (
         client.table("asset_identifiers")
         .select("asset_id,provider,symbol,exchange,is_primary")
@@ -52,8 +60,10 @@ def dividend_calendar_context(client: Client, max_positions: int = 80) -> dict[s
                 "asset_id": row["asset_id"],
                 "broker_id": row["broker_id"],
                 "symbol": primary_by_asset.get(row["asset_id"], row.get("name", "")),
-                "name": row.get("name"),
-                "asset_type": row.get("asset_type"),
+                "name": assets_by_id.get(row["asset_id"], {}).get("name") or row.get("name"),
+                "asset_type": assets_by_id.get(row["asset_id"], {}).get("asset_type") or row.get("asset_type"),
+                "isin": assets_by_id.get(row["asset_id"], {}).get("isin"),
+                "asset_currency": assets_by_id.get(row["asset_id"], {}).get("currency"),
                 "broker": row.get("broker"),
                 "quantity": float(row.get("quantity") or 0),
                 "price_currency": row.get("price_currency"),
@@ -64,31 +74,101 @@ def dividend_calendar_context(client: Client, max_positions: int = 80) -> dict[s
     }
 
 
-def dividend_calendar_queries(context: dict[str, Any], request: CalendarRequest) -> list[dict[str, Any]]:
-    searches = []
+def unique_terms(values: list[Any], limit: int = 8) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = text.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        terms.append(text)
+        if len(terms) >= limit:
+            break
+    return terms
+
+
+def position_search_terms(position: dict[str, Any]) -> dict[str, list[str] | str]:
+    identifiers = position.get("identifiers") or []
+    symbols = unique_terms(
+        [
+            position.get("symbol"),
+            *[row.get("symbol") for row in identifiers if row.get("symbol")],
+        ]
+    )
+    isin = str(position.get("isin") or "").strip()
+    name = str(position.get("name") or "").strip()
+    return {"symbols": symbols, "isin": isin, "name": name}
+
+
+def dividend_calendar_query_variants(position: dict[str, Any], request: CalendarRequest) -> list[str]:
     current_year = datetime.now(UTC).year
     focus = f" {request.focus}" if request.focus else ""
+    terms = position_search_terms(position)
+    symbols = terms["symbols"] if isinstance(terms["symbols"], list) else []
+    isin = str(terms["isin"] or "")
+    name = str(terms["name"] or "")
+    symbol_text = " ".join(symbols[:3])
+    common_tail = f"{current_year} {current_year + 1}{focus}"
+
+    if position.get("asset_type") == "etf":
+        core = unique_terms([isin, name, symbol_text], limit=3)
+        return [
+            f"{' '.join(core)} ETF distribution dividend ex-dividend payment date {common_tail}",
+            f"{isin or name} ETF dividends distributions income payment date {common_tail}",
+            f"{isin or name} UCITS ETF distribution calendar ex date pay date {common_tail}",
+            f"site:justetf.com {isin or name} distributions dividends",
+        ]
+
+    return [
+        f"{symbol_text} {name} declared dividend ex-dividend date record date payment date {common_tail}",
+        f"{symbol_text or name} dividend announcement payment date ex-date {common_tail}",
+    ]
+
+
+def dividend_calendar_queries(context: dict[str, Any], request: CalendarRequest) -> list[dict[str, Any]]:
+    searches = []
     for position in context.get("positions", [])[: request.max_positions]:
-        symbol = position.get("symbol")
-        name = position.get("name")
-        query = (
-            f"{symbol} {name} declared dividend ex-dividend date record date payment date "
-            f"{current_year} {current_year + 1}{focus}"
-        )
-        searches.append({"asset_id": position["asset_id"], "broker_id": position["broker_id"], "query": query})
+        for query in dividend_calendar_query_variants(position, request):
+            searches.append(
+                {
+                    "asset_id": position["asset_id"],
+                    "broker_id": position["broker_id"],
+                    "query": query,
+                }
+            )
     return searches
 
 
 async def collect_declared_dividend_sources(
     context: dict[str, Any], request: CalendarRequest
 ) -> list[dict[str, Any]]:
-    searches = []
+    searches_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for item in dividend_calendar_queries(context, request):
         result = await brave_search(item["query"])
-        result["asset_id"] = item["asset_id"]
-        result["broker_id"] = item["broker_id"]
-        result["results"] = result.get("results", [])[: request.max_web_results]
-        searches.append(result)
+        key = (item["asset_id"], item["broker_id"])
+        existing = searches_by_key.setdefault(
+            key,
+            {
+                "asset_id": item["asset_id"],
+                "broker_id": item["broker_id"],
+                "queries": [],
+                "results": [],
+            },
+        )
+        existing["queries"].append(item["query"])
+        seen_urls = {row.get("url") for row in existing["results"]}
+        for row in result.get("results", []):
+            if row.get("url") in seen_urls:
+                continue
+            existing["results"].append(row)
+            seen_urls.add(row.get("url"))
+            if len(existing["results"]) >= request.max_web_results:
+                break
+    searches = list(searches_by_key.values())
     if searches and all(not search.get("results") for search in searches):
         raise RuntimeError("Brave search did not return declared dividend sources")
     return searches
@@ -97,7 +177,9 @@ async def collect_declared_dividend_sources(
 def dividend_calendar_system_prompt() -> str:
     return (
         "Eres un analista de datos financieros. Extraes dividendos declarados de resultados web "
-        "obtenidos con Brave. Devuelve solo JSON valido. No inventes dividendos no declarados. "
+        "obtenidos con Brave. Para ETFs, trata 'distribution', 'income distribution', 'dividend' "
+        "y 'pay date' como equivalentes; si el ETF es acumulativo y no reparte, devuelve events vacio. "
+        "Devuelve solo JSON valido. No inventes dividendos no declarados. "
         "Si una fuente no confirma importe y fecha, marca status='unconfirmed' y confidence bajo."
     )
 

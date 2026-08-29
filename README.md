@@ -280,6 +280,7 @@ Crear `frontend/.env.local`:
 ```text
 VITE_SUPABASE_URL=https://tu-proyecto.supabase.co
 VITE_SUPABASE_ANON_KEY=...
+VITE_API_BASE_URL=http://127.0.0.1:8000
 ```
 
 La app local abre normalmente en:
@@ -496,6 +497,8 @@ Endpoint backend:
 POST /api/dividend-calendar/refresh
 ```
 
+La pestana `Calendario dividendos` incluye un boton para ejecutar ese endpoint desde la app. El backend debe estar arrancado y `VITE_API_BASE_URL` debe apuntar a el; las claves de Supabase Secret, Brave y OpenAI se quedan siempre en backend o GitHub Actions.
+
 El workflow `.github/workflows/dividend_calendar.yml` corre los domingos a las `08:00 UTC` y tambien permite ejecucion manual.
 
 Nota importante: si un dividendo esta en una moneda distinta de EUR, el calendario lo muestra en su moneda declarada. No convierte divisas automaticamente mientras no haya FX fiable asociado.
@@ -679,7 +682,7 @@ Para uso personal:
 1. En Supabase, ir a `Authentication` -> `Users`.
 2. Crear tu usuario con email y contrasena.
 3. Si Supabase ofrece `Auto Confirm User`, dejarlo marcado para poder entrar inmediatamente.
-4. Mantener las claves privadas fuera del frontend. El navegador solo debe usar `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY`.
+4. Mantener las claves privadas fuera del frontend. El navegador solo debe usar `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` y `VITE_API_BASE_URL`.
 
 Antes de meter datos reales, revisar si quieres modelo mono-usuario simple o multiusuario.
 
