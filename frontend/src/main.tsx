@@ -191,6 +191,8 @@ type DividendForm = {
 };
 
 type TotalColumn = number | { index: number; format?: "money" | "number" | "percent" };
+type CashSection = "month" | "objectives" | "annualPlan" | "annualAccounts";
+type WealthSection = "period" | "chart" | "history";
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
@@ -1619,6 +1621,7 @@ function CashView({
   onSave: () => void;
   saving: boolean;
 }) {
+  const [section, setSection] = useState<CashSection>("month");
   const accounts = cash?.accounts ?? [];
   const plan = cash?.plan ?? [];
   const objectives = cash?.objectives ?? [];
@@ -1677,6 +1680,29 @@ function CashView({
       if (comment != null) row.comments[month] = comment;
       else row.values[month] = toNumber(value);
     });
+  const addAccount = (monthlyOnly = true) =>
+    applyCash((draft) => {
+      draft.accounts = draft.accounts ?? [];
+      draft.accounts.push({
+        name: "nueva cuenta",
+        values: monthlyOnly ? { [activeMonth]: 0 } : Object.fromEntries(months.map((month) => [month.key, 0])),
+        comments: monthlyOnly ? { [activeMonth]: "" } : {},
+      });
+    });
+  const addPlanLine = (monthlyOnly = true) =>
+    applyCash((draft) => {
+      draft.plan = draft.plan ?? [];
+      draft.plan.push({
+        name: "nuevo concepto",
+        values: monthlyOnly ? { [activeMonth]: 0 } : Object.fromEntries(months.map((month) => [month.key, 0])),
+        comments: monthlyOnly ? { [activeMonth]: "" } : {},
+      });
+    });
+  const addObjective = () =>
+    applyCash((draft) => {
+      draft.objectives = draft.objectives ?? [];
+      draft.objectives.push({ name: "nuevo objetivo", target: 0, current: 0, targetDate: `${year}-12`, simulationAdd: 0 });
+    });
   return (
     <>
       <section className="panel">
@@ -1706,20 +1732,22 @@ function CashView({
           <Metric label="Gastos previstos" value={formatMoney(Math.abs(plannedExpenses))} />
         </div>
       </section>
+      <SectionTabs
+        tabs={[
+          { id: "month", label: "Mes" },
+          { id: "objectives", label: "Objetivos" },
+          { id: "annualPlan", label: "Plan anual" },
+          { id: "annualAccounts", label: "Cuentas anual" },
+        ]}
+        active={section}
+        onChange={setSection}
+      />
+      {section === "month" && (
       <section className="two-grid">
         <div className="panel">
           <div className="panel-header">
             <h2>Saldos del mes</h2>
-            <button
-              onClick={() =>
-                applyCash((draft) => {
-                  draft.accounts = draft.accounts ?? [];
-                  draft.accounts.push({ name: "nueva cuenta", values: { [activeMonth]: 0 }, comments: { [activeMonth]: "" } });
-                })
-              }
-            >
-              Anadir cuenta
-            </button>
+            <button onClick={() => addAccount(true)}>Anadir cuenta</button>
           </div>
           <EditableTable
             columns={["Cuenta", "Saldo"]}
@@ -1740,16 +1768,7 @@ function CashView({
         <div className="panel">
           <div className="panel-header">
             <h2>Flujos previstos</h2>
-            <button
-              onClick={() =>
-                applyCash((draft) => {
-                  draft.plan = draft.plan ?? [];
-                  draft.plan.push({ name: "nuevo concepto", values: { [activeMonth]: 0 }, comments: { [activeMonth]: "" } });
-                })
-              }
-            >
-              Anadir linea
-            </button>
+            <button onClick={() => addPlanLine(true)}>Anadir linea</button>
           </div>
           <EditableTable
             columns={["Concepto", "Importe"]}
@@ -1768,19 +1787,12 @@ function CashView({
           />
         </div>
       </section>
+      )}
+      {section === "objectives" && (
       <section className="panel">
         <div className="panel-header">
           <h2>Objetivos cash</h2>
-          <button
-            onClick={() =>
-              applyCash((draft) => {
-                draft.objectives = draft.objectives ?? [];
-                draft.objectives.push({ name: "nuevo objetivo", target: 0, current: 0, targetDate: `${year}-12`, simulationAdd: 0 });
-              })
-            }
-          >
-            Anadir objetivo
-          </button>
+          <button onClick={addObjective}>Anadir objetivo</button>
         </div>
         <EditableTable
           columns={["Objetivo", "Actual", "Meta", "Fecha", "Mensual", ""]}
@@ -1804,10 +1816,11 @@ function CashView({
           ])}
         />
       </section>
-      <details className="panel details-panel">
-        <summary>Historico anual de cash</summary>
+      )}
+      {section === "annualPlan" && (
+      <section className="panel">
         <div className="panel-header soft">
-          <h2>{year}</h2>
+          <h2>Plan anual {year}</h2>
           <select
             value={year}
             onChange={(event) => {
@@ -1822,24 +1835,14 @@ function CashView({
           </select>
         </div>
         <div className="summary-grid compact">
-          <Metric label="Cuentas" value={accounts.length} />
-          <Metric label="Objetivos" value={objectives.length} />
           <Metric label="Lineas plan" value={plan.length} />
-          <Metric label="Meses cargados" value={allMonths.length} />
+          <Metric label="Flujo seleccionado" value={formatMoney(plannedNet)} tone={plannedNet >= 0 ? "good" : "bad"} />
+          <Metric label="Ingresos seleccionados" value={formatMoney(plannedIncome)} />
+          <Metric label="Gastos seleccionados" value={formatMoney(Math.abs(plannedExpenses))} />
         </div>
-        <section>
         <div className="panel-header">
           <h2>Costes e ingresos previstos</h2>
-          <button
-            onClick={() =>
-              applyCash((draft) => {
-                draft.plan = draft.plan ?? [];
-                draft.plan.push({ name: "nuevo concepto", values: Object.fromEntries(months.map((month) => [month.key, 0])), comments: {} });
-              })
-            }
-          >
-            Anadir linea
-          </button>
+          <button onClick={() => addPlanLine(false)}>Anadir linea</button>
         </div>
         <div className="table-wrap">
           <table className="wide-table">
@@ -1880,20 +1883,34 @@ function CashView({
             </tbody>
           </table>
         </div>
-        </section>
-        <section>
+      </section>
+      )}
+      {section === "annualAccounts" && (
+      <section className="panel">
+        <div className="panel-header soft">
+          <h2>Cuentas anual {year}</h2>
+          <select
+            value={year}
+            onChange={(event) => {
+              setYear(event.target.value);
+              ensureYear(event.target.value);
+            }}
+          >
+            {years.length === 0 && <option>{year}</option>}
+            {years.map((item) => (
+              <option key={item}>{item}</option>
+            ))}
+          </select>
+        </div>
+        <div className="summary-grid compact">
+          <Metric label="Cuentas" value={accounts.length} />
+          <Metric label={`Saldo ${activeMonth || year}`} value={formatMoney(cashTotal)} />
+          <Metric label="Objetivos" value={objectives.length} />
+          <Metric label="Meses cargados" value={allMonths.length} />
+        </div>
         <div className="panel-header">
           <h2>Cuentas bancarias y cash</h2>
-          <button
-            onClick={() =>
-              applyCash((draft) => {
-                draft.accounts = draft.accounts ?? [];
-                draft.accounts.push({ name: "nueva cuenta", values: Object.fromEntries(months.map((month) => [month.key, 0])), comments: {} });
-              })
-            }
-          >
-            Anadir cuenta
-          </button>
+          <button onClick={() => addAccount(false)}>Anadir cuenta</button>
         </div>
         <div className="table-wrap">
           <table className="wide-table">
@@ -1934,8 +1951,8 @@ function CashView({
             </tbody>
           </table>
         </div>
-        </section>
-      </details>
+      </section>
+      )}
     </>
   );
 }
@@ -1984,6 +2001,7 @@ function WealthView({
   onSave: () => void;
   saving: boolean;
 }) {
+  const [section, setSection] = useState<WealthSection>("period");
   const months = [...new Set(rows.map((row) => monthKey(row.Fecha)).filter(Boolean))].sort();
   const selectedMonth = month || months.at(-1) || "";
   const monthRows = rows.filter((row) => monthKey(row.Fecha) === selectedMonth);
@@ -2080,8 +2098,26 @@ function WealthView({
           <Metric label="Acciones dashboard" value={formatMoney(stockMarket)} />
           <Metric label="Filas del periodo" value={monthRows.length} />
         </div>
+      </section>
+      <SectionTabs
+        tabs={[
+          { id: "period", label: "Periodo" },
+          { id: "chart", label: "Evolucion" },
+          { id: "history", label: "Historico" },
+        ]}
+        active={section}
+        onChange={setSection}
+      />
+      {section === "chart" && (
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Evolucion patrimonio</h2>
+          <span className="muted-inline">{summary.length} periodos</span>
+        </div>
         <LineChart rows={summary} metric="Total valor mercado" />
       </section>
+      )}
+      {section === "period" && (
       <section className="panel">
         <div className="panel-header">
           <h2>Detalle imputado en {selectedMonth}</h2>
@@ -2100,6 +2136,8 @@ function WealthView({
           ])}
         />
       </section>
+      )}
+      {section === "history" && (
       <section className="panel">
         <h2>Historico completo importado</h2>
         <SimpleTable
@@ -2114,6 +2152,7 @@ function WealthView({
           ])}
         />
       </section>
+      )}
     </>
   );
 }
@@ -2300,6 +2339,26 @@ function AllocationPanel({ title, rows }: { title: string; rows: Array<{ name: s
         ))}
       </div>
     </section>
+  );
+}
+
+function SectionTabs<T extends string>({
+  tabs,
+  active,
+  onChange,
+}: {
+  tabs: Array<{ id: T; label: string }>;
+  active: T;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <nav className="section-tabs" aria-label="Secciones">
+      {tabs.map((tab) => (
+        <button key={tab.id} type="button" className={active === tab.id ? "active" : ""} onClick={() => onChange(tab.id)}>
+          {tab.label}
+        </button>
+      ))}
+    </nav>
   );
 }
 

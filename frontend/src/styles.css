@@ -155,6 +155,31 @@ h2 {
   color: #ffffff;
 }
 
+.section-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin: 0 0 14px;
+  background: #e9edf2;
+  border: 1px solid #dfe4eb;
+  border-radius: 10px;
+}
+
+.section-tabs button {
+  min-height: 32px;
+  border-color: transparent;
+  background: transparent;
+  color: #4d5868;
+  padding: 6px 12px;
+}
+
+.section-tabs button.active {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #17181c;
+  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.08);
+}
+
 .summary-grid,
 .work-grid,
 .two-grid,
@@ -444,6 +469,59 @@ tfoot th {
 .two-grid .panel th,
 .two-grid .panel td {
   white-space: normal;
+}
+
+@media (max-width: 1100px) {
+  .summary-grid,
+  .three-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .two-grid,
+  .work-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    padding: 16px;
+  }
+
+  .topbar,
+  .panel-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .login-box,
+  .toolbar,
+  .section-tabs {
+    width: 100%;
+  }
+
+  .login-box {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .login-box input {
+    width: 100%;
+  }
+
+  .login-box button {
+    width: 100%;
+  }
+
+  .section-tabs {
+    overflow-x: auto;
+  }
+
+  .summary-grid,
+  .three-grid,
+  .form-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .panel-header.soft {
