@@ -4,6 +4,12 @@
   background: #f5f7f8;
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
 }
@@ -66,9 +72,9 @@ label {
 }
 
 .app-shell {
-  max-width: 1280px;
+  max-width: 1680px;
   margin: 0 auto;
-  padding: 24px;
+  padding: 24px 32px;
 }
 
 .topbar {
@@ -159,7 +165,7 @@ h2 {
 }
 
 .two-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(420px, 1fr));
 }
 
 .three-grid {
@@ -258,23 +264,25 @@ h2 {
 
 .table-wrap {
   width: 100%;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 table {
   width: 100%;
-  min-width: 900px;
+  min-width: 680px;
   border-collapse: collapse;
   font-size: 13px;
+  table-layout: auto;
 }
 
 .wide-table {
-  min-width: 1180px;
+  min-width: 1080px;
 }
 
 th,
 td {
-  padding: 10px 12px;
+  padding: 8px 9px;
   text-align: right;
   border-bottom: 1px solid #eef1f4;
   vertical-align: middle;
@@ -309,10 +317,21 @@ thead th {
 }
 
 td input {
-  min-width: 92px;
+  min-width: 0;
   min-height: 32px;
   padding: 5px 7px;
   font-size: 12px;
+}
+
+td select {
+  min-height: 32px;
+  padding: 5px 7px;
+  font-size: 12px;
+}
+
+td input,
+td select {
+  width: 100%;
 }
 
 .comment-input {
@@ -323,6 +342,7 @@ td input {
 tfoot th {
   background: #f1f4f7;
   font-weight: 800;
+  white-space: nowrap;
 }
 
 .mini-bars {
@@ -394,6 +414,19 @@ tfoot th {
   cursor: pointer;
   padding: 15px;
   font-weight: 750;
+}
+
+.two-grid .panel table {
+  min-width: 420px;
+}
+
+.two-grid .panel .filter-row {
+  display: none;
+}
+
+.two-grid .panel th,
+.two-grid .panel td {
+  white-space: normal;
 }
 
 .panel-header.soft {

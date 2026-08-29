@@ -1720,7 +1720,7 @@ function CashView({
             </button>
           </div>
           <EditableTable
-            columns={["Cuenta", "Saldo", "Comentario"]}
+            columns={["Cuenta", "Saldo"]}
             totalColumns={[1]}
             rows={accounts.map((account, index) => [
               <input
@@ -1732,7 +1732,6 @@ function CashView({
                 }
               />,
               <input value={account.values?.[activeMonth] ?? 0} onChange={(event) => changeAccount(index, activeMonth, event.target.value)} inputMode="decimal" />,
-              <input value={account.comments?.[activeMonth] ?? ""} onChange={(event) => changeAccount(index, activeMonth, "", event.target.value)} />,
             ])}
           />
         </div>
@@ -1751,7 +1750,7 @@ function CashView({
             </button>
           </div>
           <EditableTable
-            columns={["Concepto", "Importe", "Comentario"]}
+            columns={["Concepto", "Importe"]}
             totalColumns={[1]}
             rows={plan.map((row, index) => [
               <input
@@ -1763,7 +1762,6 @@ function CashView({
                 }
               />,
               <input value={row.values?.[activeMonth] ?? 0} onChange={(event) => changePlan(index, activeMonth, event.target.value)} inputMode="decimal" />,
-              <input value={row.comments?.[activeMonth] ?? ""} onChange={(event) => changePlan(index, activeMonth, "", event.target.value)} />,
             ])}
           />
         </div>
@@ -2555,12 +2553,8 @@ function sumColumn(rows: Array<Array<React.ReactNode>>, index: number) {
 }
 
 function numericCellValue(value: React.ReactNode): number {
-  const text = cellText(value)
-    .replace(/\s/g, "")
-    .replace(/€/g, "")
-    .replace(/%/g, "")
-    .replace(/\./g, "")
-    .replace(",", ".");
+  const raw = cellText(value).replace(/\s/g, "").replace(/€/g, "").replace(/%/g, "");
+  const text = raw.includes(",") ? raw.replace(/\./g, "").replace(",", ".") : raw;
   const match = text.match(/-?\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : 0;
 }
