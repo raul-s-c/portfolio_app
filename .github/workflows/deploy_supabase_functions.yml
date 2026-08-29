@@ -12,14 +12,16 @@ jobs:
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_ID: nasuybwjddcrrmekcslu
-      APP_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      APP_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-      APP_SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-      APP_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      APP_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GITHUB_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      GITHUB_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      GITHUB_SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      GITHUB_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      GITHUB_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GITHUB_APP_OPENAI_API_KEY: ${{ secrets.APP_OPENAI_API_KEY }}
       APP_OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5.4-mini' }}
       APP_OPENAI_REPORT_MAX_OUTPUT_TOKENS: ${{ vars.OPENAI_REPORT_MAX_OUTPUT_TOKENS || '3500' }}
-      APP_BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+      GITHUB_BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+      GITHUB_APP_BRAVE_SEARCH_API_KEY: ${{ secrets.APP_BRAVE_SEARCH_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: supabase/setup-cli@v3
@@ -29,26 +31,28 @@ jobs:
         shell: bash
         run: |
           test -n "$SUPABASE_ACCESS_TOKEN" || (echo "Missing GitHub secret SUPABASE_ACCESS_TOKEN" && exit 1)
-          test -n "$APP_SUPABASE_URL" || (echo "Missing GitHub secret SUPABASE_URL" && exit 1)
-          test -n "$APP_SUPABASE_ANON_KEY" || (echo "Missing GitHub secret SUPABASE_ANON_KEY" && exit 1)
-          test -n "$APP_SUPABASE_SECRET_KEY$APP_SUPABASE_SERVICE_ROLE_KEY" || (echo "Missing GitHub secret SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY" && exit 1)
+          test -n "$GITHUB_SUPABASE_URL" || (echo "Missing GitHub secret SUPABASE_URL" && exit 1)
+          test -n "$GITHUB_SUPABASE_ANON_KEY" || (echo "Missing GitHub secret SUPABASE_ANON_KEY" && exit 1)
+          test -n "$GITHUB_SUPABASE_SECRET_KEY$GITHUB_SUPABASE_SERVICE_ROLE_KEY" || (echo "Missing GitHub secret SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY" && exit 1)
       - name: Sync Edge Function secrets
         shell: bash
         run: |
+          OPENAI_KEY="${GITHUB_APP_OPENAI_API_KEY:-$GITHUB_OPENAI_API_KEY}"
+          BRAVE_KEY="${GITHUB_APP_BRAVE_SEARCH_API_KEY:-$GITHUB_BRAVE_SEARCH_API_KEY}"
           printf '%s\n' \
-            "SUPABASE_URL=$APP_SUPABASE_URL" \
-            "SUPABASE_ANON_KEY=$APP_SUPABASE_ANON_KEY" \
-            "SUPABASE_SECRET_KEY=${APP_SUPABASE_SECRET_KEY:-$APP_SUPABASE_SERVICE_ROLE_KEY}" \
+            "PORTFOLIO_SUPABASE_URL=$GITHUB_SUPABASE_URL" \
+            "PORTFOLIO_SUPABASE_ANON_KEY=$GITHUB_SUPABASE_ANON_KEY" \
+            "PORTFOLIO_SUPABASE_SECRET_KEY=${GITHUB_SUPABASE_SECRET_KEY:-$GITHUB_SUPABASE_SERVICE_ROLE_KEY}" \
             > /tmp/portfolio-api.env
-          if [ -n "$APP_OPENAI_API_KEY" ]; then
+          if [ -n "$OPENAI_KEY" ]; then
             printf '%s\n' \
-              "OPENAI_API_KEY=$APP_OPENAI_API_KEY" \
+              "OPENAI_API_KEY=$OPENAI_KEY" \
               "OPENAI_MODEL=$APP_OPENAI_MODEL" \
               "OPENAI_REPORT_MAX_OUTPUT_TOKENS=$APP_OPENAI_REPORT_MAX_OUTPUT_TOKENS" \
               >> /tmp/portfolio-api.env
           fi
-          if [ -n "$APP_BRAVE_SEARCH_API_KEY" ]; then
-            printf '%s\n' "BRAVE_SEARCH_API_KEY=$APP_BRAVE_SEARCH_API_KEY" >> /tmp/portfolio-api.env
+          if [ -n "$BRAVE_KEY" ]; then
+            printf '%s\n' "BRAVE_SEARCH_API_KEY=$BRAVE_KEY" >> /tmp/portfolio-api.env
           fi
           supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" --env-file /tmp/portfolio-api.env
       - name: Deploy portfolio API

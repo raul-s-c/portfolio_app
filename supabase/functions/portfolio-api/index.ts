@@ -6,10 +6,13 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const SUPABASE_URL = requireEnv("SUPABASE_URL").replace(/\/$/, "");
-const SUPABASE_ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
+const SUPABASE_URL = requireAnyEnv("PORTFOLIO_SUPABASE_URL", "SUPABASE_URL").replace(/\/$/, "");
+const SUPABASE_ANON_KEY = requireAnyEnv("PORTFOLIO_SUPABASE_ANON_KEY", "SUPABASE_ANON_KEY");
 const SUPABASE_BACKEND_KEY =
-  Deno.env.get("SUPABASE_SECRET_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+  Deno.env.get("PORTFOLIO_SUPABASE_SECRET_KEY") ||
+  Deno.env.get("SUPABASE_SECRET_KEY") ||
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ||
+  "";
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") || "";
 const BRAVE_SEARCH_API_KEY = Deno.env.get("BRAVE_SEARCH_API_KEY") || "";
 const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.4-mini";
@@ -19,6 +22,14 @@ function requireEnv(name: string) {
   const value = Deno.env.get(name);
   if (!value) throw new Error(`${name} missing`);
   return value;
+}
+
+function requireAnyEnv(...names: string[]) {
+  for (const name of names) {
+    const value = Deno.env.get(name);
+    if (value) return value;
+  }
+  throw new Error(`${names.join(" or ")} missing`);
 }
 
 function jsonResponse(body: Dict, status = 200) {
