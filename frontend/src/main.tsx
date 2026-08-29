@@ -5,7 +5,7 @@ import "./styles.css";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL ?? "";
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000/api").replace(/\/$/, "");
 const supabase = window.__portfolioSupabase ?? createClient(supabaseUrl, supabaseAnonKey);
 window.__portfolioSupabase = supabase;
 
@@ -461,9 +461,12 @@ function App() {
     setRefreshingDividendCalendar(true);
     setMessage("Actualizando calendario de dividendos con Brave + OpenAI...");
     try {
-      const response = await fetch(`${apiBaseUrl}/api/dividend-calendar/refresh`, {
+      const response = await fetch(`${apiBaseUrl}/dividend-calendar/refresh`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({
           max_positions: 120,
           max_web_results: 8,
@@ -480,7 +483,7 @@ function App() {
       setMessage(`Calendario actualizado: ${result.events ?? 0} eventos para ${result.positions ?? 0} posiciones.`);
     } catch (error) {
       setMessage(
-        `No he podido actualizar el calendario. Comprueba que el backend esta arrancado en ${apiBaseUrl}. ${
+        `No he podido actualizar el calendario. Comprueba que el backend esta disponible en ${apiBaseUrl}. ${
           error instanceof Error ? error.message : ""
         }`
       );

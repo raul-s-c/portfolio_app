@@ -289,6 +289,54 @@ La app local abre normalmente en:
 http://localhost:5173
 ```
 
+## Acceso Remoto
+
+La app queda preparada para publicarse en GitHub Pages:
+
+```text
+https://raul-s-c.github.io/portfolio_app/
+```
+
+En GitHub, activa Pages en:
+
+```text
+Settings -> Pages -> Source -> GitHub Actions
+```
+
+El workflow `.github/workflows/deploy_pages.yml` construye `frontend` en cada push a `main`. Usa:
+
+```text
+VITE_SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+VITE_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+VITE_API_BASE_URL=https://nasuybwjddcrrmekcslu.supabase.co/functions/v1/portfolio-api
+```
+
+La app remota sigue protegida por Supabase Auth/RLS. Las claves privadas no se publican en el navegador.
+
+## Backend Remoto
+
+Para que acciones como `Actualizar calendario` funcionen sin tu ordenador, despliega la Edge Function:
+
+```bash
+supabase functions deploy portfolio-api --project-ref nasuybwjddcrrmekcslu
+```
+
+Configura estos secrets en Supabase Edge Functions:
+
+```text
+SUPABASE_SECRET_KEY
+OPENAI_API_KEY
+OPENAI_MODEL
+OPENAI_REPORT_MAX_OUTPUT_TOKENS
+BRAVE_SEARCH_API_KEY
+```
+
+El endpoint remoto queda en:
+
+```text
+https://nasuybwjddcrrmekcslu.supabase.co/functions/v1/portfolio-api/dividend-calendar/refresh
+```
+
 ## Tests
 
 Desde raiz:
