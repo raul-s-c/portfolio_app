@@ -198,7 +198,9 @@ type DividendForm = {
 
 type TotalColumn = number | { index: number; format?: "money" | "number" | "percent" };
 type CashSection = "month" | "objectives" | "annualPlan" | "annualAccounts";
+type DividendSection = "analysis" | "evolution" | "assets" | "edit";
 type WealthSection = "period" | "chart" | "history";
+type DividendAggregate = { name: string; gross: number; tax: number; net: number; count: number; weight: number };
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
@@ -1385,11 +1387,22 @@ function DividendsView({
   loading: boolean;
 }) {
   const [drafts, setDrafts] = useState<Record<string, DividendForm>>({});
+  const [section, setSection] = useState<DividendSection>("analysis");
   useEffect(() => {
     setDrafts(Object.fromEntries(rows.map((row) => [row.id, dividendFormFromRow(row)])));
   }, [rows]);
-  const totalNet = rows.reduce((acc, row) => acc + Number(row.net_amount ?? 0), 0);
-  const totalTax = rows.reduce((acc, row) => acc + Number(row.tax ?? 0), 0);
+  const totalNet = rows.reduce((acc, row) => acc + toNumber(row.net_amount ?? 0), 0);
+  const totalGross = rows.reduce((acc, row) => acc + toNumber(row.gross_amount ?? 0), 0);
+  const totalTax = rows.reduce((acc, row) => acc + toNumber(row.tax ?? 0), 0);
+  const monthlyRows = dividendMonthlyRows(rows);
+  const yearlyRows = aggregateDividends(rows, (row) => {
+    const date = parseDate(row.pay_date);
+    return date ? String(date.getFullYear()) : "Sin fecha";
+  });
+  const byAsset = aggregateDividends(rows, (row) => `${primarySymbols.get(row.asset_id) ?? ""} ${row.asset?.name ?? ""}`.trim() || "Sin activo");
+  const byBroker = aggregateDividends(rows, (row) => row.broker?.name ?? "Sin broker");
+  const byCurrency = aggregateDividends(rows, (row) => row.currency || "Sin moneda");
+  const annualPivot = dividendAnnualPivot(rows);
   return (
     <>
       <form className="panel form-panel" onSubmit={onSubmit}>
@@ -1450,14 +1463,74 @@ function DividendsView({
       </form>
       <section className="panel">
         <div className="panel-header">
-          <h2>Base de datos dividendos</h2>
+          <h2>Dividendos</h2>
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="filtrar dividendos" />
         </div>
         <div className="summary-grid compact">
           <Metric label="Neto visible" value={formatMoney(totalNet)} />
+          <Metric label="Bruto visible" value={formatMoney(totalGross)} />
           <Metric label="Retencion visible" value={formatMoney(totalTax)} />
-          <Metric label="Filas" value={rows.length} />
-          <Metric label="Media neta" value={formatMoney(rows.length ? totalNet / rows.length : 0)} />
+          <Metric label="Media mensual" value={formatMoney(monthlyRows.length ? totalNet / monthlyRows.length : 0)} />
+        </div>
+      </section>
+      <SectionTabs
+        tabs={[
+          { id: "analysis", label: "Analisis" },
+          { id: "evolution", label: "Evolucion" },
+          { id: "assets", label: "Por activo" },
+          { id: "edit", label: "Edicion" },
+        ]}
+        active={section}
+        onChange={setSection}
+      />
+      {section === "analysis" && (
+      <>
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Evolucion neta mensual</h2>
+          <span className="muted-inline">{monthlyRows.length} meses con dividendos</span>
+        </div>
+        <LineChart rows={monthlyRows} metric="Neto" />
+      </section>
+      <section className="three-grid">
+        <DividendSummaryTable title="Por ano" rows={yearlyRows} />
+        <DividendSummaryTable title="Por broker" rows={byBroker} />
+        <DividendSummaryTable title="Por moneda" rows={byCurrency} />
+      </section>
+      </>
+      )}
+      {section === "evolution" && (
+      <>
+      <section className="panel">
+        <h2>Evolucion mensual</h2>
+        <SimpleTable
+          columns={["Mes", "Bruto", "Tax", "Neto", "Dividendos"]}
+          totalColumns={[{ index: 1, format: "money" }, { index: 2, format: "money" }, { index: 3, format: "money" }, { index: 4, format: "number" }]}
+          rows={monthlyRows.map((row) => [row.Mes, formatMoney(row.Bruto), formatMoney(row.Tax), formatMoney(row.Neto), row.Dividendos])}
+        />
+      </section>
+      <section className="panel">
+        <h2>Tabla dinamica anual</h2>
+        <SimpleTable
+          columns={["Ano", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic", "Total"]}
+          totalColumns={[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].map((index) => ({ index, format: "money" as const }))}
+          rows={annualPivot.map((row) => [
+            row.year,
+            ...row.months.map((value) => formatMoney(value)),
+            formatMoney(row.total),
+          ])}
+        />
+      </section>
+      </>
+      )}
+      {section === "assets" && (
+      <DividendSummaryTable title="Dividendos por activo" rows={byAsset} />
+      )}
+      {section === "edit" && (
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Base de datos dividendos</h2>
+          <span className="muted-inline">{rows.length} filas visibles</span>
         </div>
         <EditableTable
           columns={["Fecha", "Ticker", "Bruto", "Tax", "Neto", "Moneda", "Broker", "Nota", ""]}
@@ -1498,6 +1571,7 @@ function DividendsView({
           })}
         />
       </section>
+      )}
     </>
   );
 }
@@ -2537,6 +2611,31 @@ function SectionTabs<T extends string>({
   );
 }
 
+function DividendSummaryTable({ title, rows }: { title: string; rows: DividendAggregate[] }) {
+  return (
+    <section className="panel">
+      <h2>{title}</h2>
+      <SimpleTable
+        columns={["Grupo", "Bruto", "Tax", "Neto", "Dividendos", "Peso"]}
+        totalColumns={[
+          { index: 1, format: "money" },
+          { index: 2, format: "money" },
+          { index: 3, format: "money" },
+          { index: 4, format: "number" },
+        ]}
+        rows={rows.map((row) => [
+          row.name,
+          formatMoney(row.gross),
+          formatMoney(row.tax),
+          formatMoney(row.net),
+          row.count,
+          formatPercent(row.weight),
+        ])}
+      />
+    </section>
+  );
+}
+
 function SimpleTable({
   columns,
   rows,
@@ -2740,6 +2839,55 @@ function groupPositions<T extends { marketValue: number }>(rows: T[], keyFn: (ro
   return [...map.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([name, value]) => ({ name, value, weight: value / total }));
+}
+
+function aggregateDividends(rows: Array<Dividend & { asset?: Asset; broker?: Broker }>, keyFn: (row: Dividend & { asset?: Asset; broker?: Broker }) => string): DividendAggregate[] {
+  const total = rows.reduce((acc, row) => acc + toNumber(row.net_amount), 0) || 1;
+  const map = new Map<string, { gross: number; tax: number; net: number; count: number }>();
+  for (const row of rows) {
+    const key = keyFn(row) || "Sin clasificar";
+    const current = map.get(key) ?? { gross: 0, tax: 0, net: 0, count: 0 };
+    current.gross += toNumber(row.gross_amount);
+    current.tax += toNumber(row.tax);
+    current.net += toNumber(row.net_amount);
+    current.count += 1;
+    map.set(key, current);
+  }
+  return [...map.entries()]
+    .sort((a, b) => b[1].net - a[1].net)
+    .map(([name, value]) => ({ name, ...value, weight: value.net / total }));
+}
+
+function dividendMonthlyRows(rows: Array<Dividend & { asset?: Asset; broker?: Broker }>) {
+  return aggregateDividends(rows, (row) => monthKey(row.pay_date) || "Sin fecha")
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((row) => ({
+      Mes: row.name,
+      Bruto: row.gross,
+      Tax: row.tax,
+      Neto: row.net,
+      Dividendos: row.count,
+    }));
+}
+
+function dividendAnnualPivot(rows: Array<Dividend & { asset?: Asset; broker?: Broker }>) {
+  const byYear = new Map<string, number[]>();
+  for (const row of rows) {
+    const date = parseDate(row.pay_date);
+    if (!date) continue;
+    const year = String(date.getFullYear());
+    const values = byYear.get(year) ?? Array.from({ length: 12 }, () => 0);
+    values[date.getMonth()] += toNumber(row.net_amount);
+    byYear.set(year, values);
+  }
+  return [...byYear.entries()]
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([year, months]) => ({ year, months, total: months.reduce((acc, value) => acc + value, 0) }));
+}
+
+function parseDate(value: string | null | undefined) {
+  const date = new Date(String(value ?? ""));
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function transactionFormFromRow(row: Transaction): TransactionForm {
