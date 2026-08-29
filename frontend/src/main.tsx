@@ -2134,6 +2134,11 @@ function WealthView({
   const stockPositions = positions.filter((row) => row.asset_type === "stock");
   const stockCost = stockPositions.reduce((acc, row) => acc + row.costBasis, 0);
   const stockMarket = stockPositions.reduce((acc, row) => acc + row.marketValue, 0);
+  const stockGain = stockMarket - stockCost;
+  const actionsRow = monthRows.find((row) => String(row.Tipo ?? "").trim().toLowerCase() === "acciones");
+  const actionsImputedCost = toNumber(actionsRow?.["Valor aportaciones"] ?? 0);
+  const actionsImputedMarket = toNumber(actionsRow?.["Valor mercado"] ?? 0);
+  const actionsMarketDelta = stockMarket - actionsImputedMarket;
   const updateRows = (nextRows: WealthRow[]) => onChange(nextRows, recomputeWealthSummary(nextRows));
   const updateMonthRow = (rowIndex: number, key: string, value: string) => {
     const absoluteIndex = rows.findIndex((row) => row === monthRows[rowIndex]);
@@ -2219,8 +2224,8 @@ function WealthView({
         <div className="summary-grid compact">
           <Metric label="Valor mercado periodo" value={formatMoney(toNumber(currentSummary?.["Total valor mercado"] ?? 0))} />
           <Metric label="Aportaciones periodo" value={formatMoney(toNumber(currentSummary?.["total aportaciones"] ?? 0))} />
-          <Metric label="Acciones dashboard" value={formatMoney(stockMarket)} />
-          <Metric label="Filas del periodo" value={monthRows.length} />
+          <Metric label="Acciones calculadas" value={formatMoney(stockMarket)} />
+          <Metric label="Diferencia acciones" value={formatMoney(actionsMarketDelta)} tone={Math.abs(actionsMarketDelta) < 1 ? "good" : "bad"} />
         </div>
       </section>
       <SectionTabs
@@ -2242,10 +2247,38 @@ function WealthView({
       </section>
       )}
       {section === "period" && (
+      <>
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Conciliacion de acciones</h2>
+          <button onClick={syncActionsFromDashboard}>Usar calculo en patrimonio</button>
+        </div>
+        <div className="summary-grid compact">
+          <Metric label="Coste dashboard" value={formatMoney(stockCost)} />
+          <Metric label="Mercado dashboard" value={formatMoney(stockMarket)} />
+          <Metric label="Mercado imputado" value={formatMoney(actionsImputedMarket)} />
+          <Metric label="Diferencia" value={formatMoney(actionsMarketDelta)} tone={Math.abs(actionsMarketDelta) < 1 ? "good" : "bad"} />
+        </div>
+        <SimpleTable
+          columns={["Ticker", "Activo", "Broker", "Coste", "Mercado", "P&G"]}
+          totalColumns={[{ index: 3, format: "money" }, { index: 4, format: "money" }, { index: 5, format: "money" }]}
+          rows={stockPositions.map((row) => [
+            row.symbol,
+            row.name,
+            row.broker,
+            formatMoney(row.costBasis),
+            formatMoney(row.marketValue),
+            <span className={row.latentGain >= 0 ? "good" : "bad"}>{formatMoney(row.latentGain)}</span>,
+          ])}
+        />
+        <p className="muted">
+          Acciones imputadas en patrimonio: coste {formatMoney(actionsImputedCost)}, mercado {formatMoney(actionsImputedMarket)}. El boton actualiza o crea la fila "Acciones" del periodo seleccionado.
+        </p>
+      </section>
       <section className="panel">
         <div className="panel-header">
           <h2>Detalle imputado en {selectedMonth}</h2>
-          <span className="muted-inline">Fecha comun: {selectedDate}</span>
+          <span className="muted-inline">Fecha comun: {selectedDate} - {monthRows.length} filas</span>
         </div>
         <EditableTable
           columns={["Tipo", "Liquido", "Aportaciones", "Mercado", "Dividendos", "Rendimiento"]}
@@ -2260,6 +2293,7 @@ function WealthView({
           ])}
         />
       </section>
+      </>
       )}
       {section === "history" && (
       <section className="panel">
