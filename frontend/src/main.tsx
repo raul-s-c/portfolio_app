@@ -13,6 +13,7 @@ type TabId =
   | "positions"
   | "transactions"
   | "dividends"
+  | "dividendCalendar"
   | "assets"
   | "etf"
   | "cash"
@@ -91,6 +92,30 @@ type Dividend = {
   currency: string;
   source_file: string | null;
   raw_payload: Record<string, unknown>;
+};
+
+type DividendCalendarEvent = {
+  id: string;
+  asset_id: string;
+  broker_id: string;
+  symbol: string | null;
+  asset_name: string | null;
+  asset_type: "stock" | "etf";
+  broker: string | null;
+  quantity: number;
+  declaration_date: string | null;
+  ex_date: string | null;
+  record_date: string | null;
+  payment_date: string | null;
+  dividend_amount: number;
+  currency: string;
+  expected_gross_amount: number;
+  status: string;
+  confidence: number;
+  source_url: string | null;
+  source_title: string | null;
+  notes: string | null;
+  updated_at: string;
 };
 
 type PriceSnapshot = {
@@ -201,12 +226,14 @@ type CashSection = "month" | "objectives" | "annualPlan" | "annualAccounts";
 type DividendSection = "analysis" | "evolution" | "assets" | "edit";
 type WealthSection = "period" | "chart" | "history";
 type DividendAggregate = { name: string; gross: number; tax: number; net: number; count: number; weight: number };
+type CalendarAggregate = { name: string; currency: string; expected: number; count: number; averageConfidence: number; weight: number };
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
   { id: "positions", label: "Posiciones" },
   { id: "transactions", label: "Movimientos" },
   { id: "dividends", label: "Dividendos" },
+  { id: "dividendCalendar", label: "Calendario dividendos" },
   { id: "assets", label: "Mapeos" },
   { id: "etf", label: "ETF" },
   { id: "cash", label: "Cash" },
@@ -264,6 +291,7 @@ function App() {
   const [brokers, setBrokers] = useState<Broker[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [dividends, setDividends] = useState<Dividend[]>([]);
+  const [dividendCalendar, setDividendCalendar] = useState<DividendCalendarEvent[]>([]);
   const [priceSnapshots, setPriceSnapshots] = useState<PriceSnapshot[]>([]);
   const [portfolioSnapshots, setPortfolioSnapshots] = useState<PortfolioSnapshot[]>([]);
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
@@ -324,6 +352,7 @@ function App() {
     setBrokers([]);
     setTransactions([]);
     setDividends([]);
+    setDividendCalendar([]);
     setPriceSnapshots([]);
     setPortfolioSnapshots([]);
     setQueue([]);
@@ -342,6 +371,7 @@ function App() {
       brokersResult,
       transactionsResult,
       dividendsResult,
+      dividendCalendarResult,
       priceSnapshotsResult,
       portfolioSnapshotsResult,
       queueResult,
@@ -355,6 +385,11 @@ function App() {
       supabase.from("brokers").select("id,name").order("name"),
       supabase.from("transactions").select("*").order("trade_date", { ascending: false }).limit(500),
       supabase.from("dividends").select("*").order("pay_date", { ascending: false }).limit(500),
+      supabase
+        .from("dividend_calendar_events")
+        .select("*")
+        .order("payment_date", { ascending: true, nullsFirst: false })
+        .limit(250),
       supabase.from("price_snapshots").select("*").order("priced_at", { ascending: false }).limit(250),
       supabase.from("portfolio_snapshots").select("*").order("snapshot_date", { ascending: false }).limit(500),
       supabase
@@ -391,6 +426,7 @@ function App() {
       setBrokers((brokersResult.data ?? []) as Broker[]);
       setTransactions((transactionsResult.data ?? []) as Transaction[]);
       setDividends((dividendsResult.data ?? []) as Dividend[]);
+      setDividendCalendar(dividendCalendarResult.error ? [] : ((dividendCalendarResult.data ?? []) as DividendCalendarEvent[]));
       setPriceSnapshots((priceSnapshotsResult.data ?? []) as PriceSnapshot[]);
       setPortfolioSnapshots((portfolioSnapshotsResult.data ?? []) as PortfolioSnapshot[]);
       setQueue((queueResult.data ?? []) as ResolutionQueueItem[]);
@@ -928,6 +964,7 @@ function App() {
           loading={loading}
         />
       )}
+      {activeTab === "dividendCalendar" && <DividendCalendarView events={dividendCalendar} />}
       {activeTab === "assets" && (
         <AssetsView
           assets={filteredAssets}
@@ -1572,6 +1609,79 @@ function DividendsView({
         />
       </section>
       )}
+    </>
+  );
+}
+
+function DividendCalendarView({ events }: { events: DividendCalendarEvent[] }) {
+  const upcoming = events
+    .filter((event) => event.payment_date || event.ex_date)
+    .sort((a, b) => String(a.payment_date ?? a.ex_date).localeCompare(String(b.payment_date ?? b.ex_date)));
+  const expectedEur = upcoming
+    .filter((event) => normalizeCurrency(event.currency) === "EUR")
+    .reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
+  const nonEurEvents = upcoming.filter((event) => normalizeCurrency(event.currency) !== "EUR").length;
+  const confirmedTotal = upcoming
+    .filter((event) => normalizeCurrency(event.currency) === "EUR" && (event.status === "declared" || toNumber(event.confidence) >= 0.7))
+    .reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
+  const averageConfidence =
+    upcoming.length > 0 ? upcoming.reduce((acc, event) => acc + toNumber(event.confidence), 0) / upcoming.length : 0;
+  const byMonth = aggregateCalendarEvents(upcoming, (event) => monthKey(event.payment_date ?? event.ex_date));
+  const byAsset = aggregateCalendarEvents(
+    upcoming,
+    (event) => `${event.symbol ?? ""} ${event.asset_name ?? ""}`.trim() || "Sin activo"
+  );
+  return (
+    <>
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Calendario de dividendos</h2>
+          <span className="muted-inline">Se actualiza con backend: Brave + OpenAI</span>
+        </div>
+        <div className="summary-grid compact">
+          <Metric label="Esperado EUR" value={formatMoney(expectedEur)} />
+          <Metric label="Alta confianza EUR" value={formatMoney(confirmedTotal)} />
+          <Metric label="Eventos" value={upcoming.length} />
+          <Metric label="Confianza media" value={formatPercent(averageConfidence)} />
+        </div>
+        <p className="muted">
+          El calendario calcula importe esperado como cantidad en cartera por dividendo declarado por accion/participacion. Hay {nonEurEvents} eventos en moneda distinta de EUR; revisa siempre fuente y confianza antes de darlo por definitivo.
+        </p>
+      </section>
+      <section className="panel">
+        <h2>Proximos cobros estimados</h2>
+        <SimpleTable
+          columns={["Pago", "Ex-date", "Ticker", "Activo", "Tipo", "Broker", "Cantidad", "Dividendo", "Esperado", "Estado", "Conf.", "Fuente"]}
+          totalColumns={[
+            { index: 6, format: "number" },
+            { index: 8, format: "money" },
+          ]}
+          rows={upcoming.map((event) => [
+            event.payment_date ?? "",
+            event.ex_date ?? "",
+            event.symbol ?? "",
+            event.asset_name ?? "",
+            assetTypeLabel(event.asset_type),
+            event.broker ?? "",
+            formatNumber(event.quantity),
+            formatPlainMoney(event.dividend_amount, event.currency),
+            formatPlainMoney(event.expected_gross_amount, event.currency),
+            event.status,
+            formatPercent(event.confidence),
+            event.source_url ? (
+              <a href={event.source_url} target="_blank" rel="noreferrer">
+                {event.source_title || "fuente"}
+              </a>
+            ) : (
+              ""
+            ),
+          ])}
+        />
+      </section>
+      <section className="two-grid">
+        <CalendarSummaryTable title="Por mes previsto" rows={byMonth} />
+        <CalendarSummaryTable title="Por activo previsto" rows={byAsset} />
+      </section>
     </>
   );
 }
@@ -2636,6 +2746,28 @@ function DividendSummaryTable({ title, rows }: { title: string; rows: DividendAg
   );
 }
 
+function CalendarSummaryTable({ title, rows }: { title: string; rows: CalendarAggregate[] }) {
+  return (
+    <section className="panel">
+      <h2>{title}</h2>
+      <SimpleTable
+        columns={["Grupo", "Moneda", "Esperado", "Eventos", "Confianza", "Peso"]}
+        totalColumns={[
+          { index: 3, format: "number" },
+        ]}
+        rows={rows.map((row) => [
+          row.name,
+          row.currency,
+          formatPlainMoney(row.expected, row.currency),
+          row.count,
+          formatPercent(row.averageConfidence),
+          formatPercent(row.weight),
+        ])}
+      />
+    </section>
+  );
+}
+
 function SimpleTable({
   columns,
   rows,
@@ -2888,6 +3020,34 @@ function dividendAnnualPivot(rows: Array<Dividend & { asset?: Asset; broker?: Br
 function parseDate(value: string | null | undefined) {
   const date = new Date(String(value ?? ""));
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function aggregateCalendarEvents(events: DividendCalendarEvent[], keyFn: (event: DividendCalendarEvent) => string): CalendarAggregate[] {
+  const total = events.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0) || 1;
+  const map = new Map<string, { expected: number; confidence: number; count: number }>();
+  for (const event of events) {
+    const currency = normalizeCurrency(event.currency);
+    const name = keyFn(event) || "Sin clasificar";
+    const key = `${name}||${currency}`;
+    const current = map.get(key) ?? { expected: 0, confidence: 0, count: 0 };
+    current.expected += toNumber(event.expected_gross_amount);
+    current.confidence += toNumber(event.confidence);
+    current.count += 1;
+    map.set(key, current);
+  }
+  return [...map.entries()]
+    .sort((a, b) => b[1].expected - a[1].expected)
+    .map(([key, value]) => {
+      const [name, currency] = key.split("||");
+      return {
+      name,
+      currency,
+      expected: value.expected,
+      count: value.count,
+      averageConfidence: value.count ? value.confidence / value.count : 0,
+      weight: value.expected / total,
+    };
+    });
 }
 
 function transactionFormFromRow(row: Transaction): TransactionForm {

@@ -1,7 +1,10 @@
+from typing import Annotated
+
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.core.supabase_client import service_client
 from app.services.asset_onboarding import find_existing_asset, upsert_manual_asset
+from app.services.dividend_calendar import CalendarRequest, refresh_dividend_calendar
 from app.services.import_service import import_movements, parse_file
 from app.services.portfolio import calculate_open_positions
 from app.services.prices import update_price_snapshots
@@ -55,8 +58,8 @@ def create_manual_asset(payload: dict) -> dict:
 @router.post("/imports/{source}")
 async def import_file(
     source: str,
-    file: UploadFile = File(...),
-    dry_run: bool = Form(True),
+    file: Annotated[UploadFile, File()],
+    dry_run: Annotated[bool, Form()] = True,
 ) -> dict:
     content = await file.read()
     client = service_client()
@@ -116,3 +119,14 @@ async def create_etf_resilient_report(payload: dict) -> dict:
         max_web_results=int(payload.get("max_web_results") or 12),
     )
     return await generate_research_report(client, request)
+
+
+@router.post("/dividend-calendar/refresh")
+async def refresh_declared_dividend_calendar(payload: dict) -> dict:
+    client = service_client()
+    request = CalendarRequest(
+        focus=payload.get("focus"),
+        max_positions=int(payload.get("max_positions") or 80),
+        max_web_results=int(payload.get("max_web_results") or 5),
+    )
+    return await refresh_dividend_calendar(client, request)

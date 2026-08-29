@@ -464,12 +464,46 @@ myinvestor_resilient_etf
 
 El workflow `.github/workflows/nightly_reports.yml` genera los domingos los dos informes principales (`portfolio_group_analysis` y `etf_resilient_portfolio`) y tambien permite ejecucion manual de cualquiera de los tipos.
 
+## Calendario De Dividendos Declarados
+
+El calendario de dividendos estima cobros futuros a partir de las posiciones abiertas en acciones y ETF:
+
+1. Lee posiciones abiertas desde `v_open_positions`.
+2. Busca dividendos declarados con `BRAVE_SEARCH_API_KEY`.
+3. Usa `OPENAI_API_KEY` para extraer y validar importe, fecha ex-dividend, fecha de pago, fuente y confianza.
+4. Calcula `expected_gross_amount = quantity * dividend_amount`.
+5. Guarda los eventos en `dividend_calendar_events`.
+6. El frontend los muestra en la pestana `Calendario dividendos`.
+
+Migracion requerida:
+
+```text
+supabase/migrations/012_dividend_calendar_events.sql
+```
+
+Comando local/manual:
+
+```bash
+python scripts/refresh_dividend_calendar.py
+```
+
+Endpoint backend:
+
+```text
+POST /api/dividend-calendar/refresh
+```
+
+El workflow `.github/workflows/dividend_calendar.yml` corre los domingos a las `08:00 UTC` y tambien permite ejecucion manual.
+
+Nota importante: si un dividendo esta en una moneda distinta de EUR, el calendario lo muestra en su moneda declarada. No convierte divisas automaticamente mientras no haya FX fiable asociado.
+
 ## GitHub Actions
 
 Hay tres workflows:
 
 ```text
 .github/workflows/backend_tests.yml
+.github/workflows/dividend_calendar.yml
 .github/workflows/nightly_prices.yml
 .github/workflows/nightly_reports.yml
 ```
@@ -663,6 +697,7 @@ Para uso personal, mono-usuario esta bien, pero conviene anadir columna `owner_i
 | `supabase/migrations/009_research_reports.sql` | Informes generados por Brave + OpenAI |
 | `supabase/migrations/010_authenticated_edit_movements.sql` | Edicion y borrado autenticados de movimientos y dividendos |
 | `supabase/migrations/011_report_types_and_asset_tags.sql` | Nuevos tipos de informes y tags de activos/ETF |
+| `supabase/migrations/012_dividend_calendar_events.sql` | Calendario de dividendos declarados y cobros esperados |
 | `scripts/load_legacy_app_state.mjs` | Carga cash y patrimonio legacy en Supabase |
 | `scripts/nightly_reports.py` | Generacion periodica de informes |
 | `backend/app/services/asset_resolver.py` | Identidad estable de activos |
