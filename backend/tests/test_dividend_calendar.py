@@ -1,7 +1,10 @@
+from datetime import UTC, datetime, timedelta
+
 from app.services.dividend_calendar import (
     calculate_expected_amount,
     clean_date,
     dividend_calendar_query_variants,
+    infer_next_distribution_from_history,
     normalize_currency,
     normalize_event,
     parse_json_response,
@@ -74,3 +77,18 @@ def test_position_search_terms_deduplicates_identifiers():
     )
 
     assert terms["symbols"] == ["IQQJ", "IJPN.L"]
+
+
+def test_infer_next_distribution_from_history_marks_estimate():
+    today = datetime.now(UTC).date()
+    estimate = infer_next_distribution_from_history(
+        [
+            {"ex_date": today - timedelta(days=180), "dividend_amount": 0.11},
+            {"ex_date": today - timedelta(days=90), "dividend_amount": 0.12},
+            {"ex_date": today - timedelta(days=1), "dividend_amount": 0.13},
+        ]
+    )
+
+    assert estimate is not None
+    assert estimate["status"] == "estimated_from_history"
+    assert estimate["dividend_amount"] == 0.13

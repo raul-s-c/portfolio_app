@@ -4,6 +4,8 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from html import unescape
+from statistics import median
 from typing import Any
 
 import httpx
@@ -174,11 +176,173 @@ async def collect_declared_dividend_sources(
     return searches
 
 
+async def fetch_result_excerpt(url: str) -> str | None:
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=12.0,
+            headers={"User-Agent": "Mozilla/5.0 PortfolioDividendCalendar/1.0"},
+        ) as http:
+            response = await http.get(url)
+            response.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    content_type = response.headers.get("content-type", "")
+    if "text/html" not in content_type and "text/plain" not in content_type:
+        return None
+    text = response.text[:120_000]
+    text = re.sub(r"(?is)<(script|style|noscript).*?</\1>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return None
+    keyword_pattern = re.compile(
+        r"(.{0,280}(dividend|distribution|ex-date|ex dividend|pay date|payment date|income).{0,700})",
+        flags=re.IGNORECASE,
+    )
+    date_pattern = re.compile(
+        r"\b(20\d{2}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]20\d{2}|"
+        r"\d{1,2}\s+[A-Za-z]{3,12}\s+20\d{2}|[A-Za-z]{3,12}\s+\d{1,2},?\s+20\d{2})\b"
+    )
+    amount_pattern = re.compile(r"(\b(EUR|USD|GBP|CHF|GBX|GBp)\b|[$€£]\s?\d|\d+[.,]\d{2,6})")
+    candidates = []
+    for match in keyword_pattern.finditer(text):
+        excerpt = match.group(1).strip()
+        score = 0
+        score += 4 if date_pattern.search(excerpt) else 0
+        score += 3 if amount_pattern.search(excerpt) else 0
+        score += 2 if re.search(r"ex[- ]?(date|dividend)|pay(ment)? date", excerpt, re.IGNORECASE) else 0
+        score += 1 if re.search(r"declared|issuer|distribution", excerpt, re.IGNORECASE) else 0
+        candidates.append((score, excerpt))
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        excerpts = [excerpt for score, excerpt in candidates if score > 0] or [excerpt for _, excerpt in candidates]
+        return "\n".join(excerpts[:10])[:9000]
+    return text[:2500]
+
+
+async def enrich_search_with_page_excerpts(
+    position: dict[str, Any],
+    search: dict[str, Any],
+    max_pages: int = 4,
+) -> dict[str, Any]:
+    if position.get("asset_type") != "etf":
+        return search
+    enriched_results = []
+    for result in search.get("results", [])[:max_pages]:
+        url = result.get("url")
+        if url:
+            excerpt = await fetch_result_excerpt(url)
+            if excerpt:
+                result = {**result, "page_excerpt": excerpt}
+        enriched_results.append(result)
+    return {**search, "results": enriched_results + search.get("results", [])[max_pages:]}
+
+
+async def yahoo_dividend_history(symbol: str) -> list[dict[str, Any]]:
+    now = int(datetime.now(UTC).timestamp())
+    start = now - 900 * 24 * 60 * 60
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as http:
+            response = await http.get(
+                url,
+                params={
+                    "period1": start,
+                    "period2": now + 60 * 24 * 60 * 60,
+                    "interval": "1d",
+                    "events": "div",
+                },
+                headers={"User-Agent": "Mozilla/5.0 PortfolioDividendCalendar/1.0"},
+            )
+            response.raise_for_status()
+    except httpx.HTTPError:
+        return []
+    try:
+        result = response.json()["chart"]["result"][0]
+        dividends = result.get("events", {}).get("dividends", {})
+    except (KeyError, IndexError, TypeError):
+        return []
+    events = []
+    for item in dividends.values():
+        amount = item.get("amount")
+        timestamp = item.get("date")
+        if not amount or not timestamp:
+            continue
+        events.append(
+            {
+                "ex_date": datetime.fromtimestamp(int(timestamp), UTC).date(),
+                "dividend_amount": float(amount),
+            }
+        )
+    return sorted(events, key=lambda item: item["ex_date"])
+
+
+def infer_next_distribution_from_history(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not history:
+        return None
+    today = datetime.now(UTC).date()
+    latest = history[-1]
+    if latest["ex_date"] >= today:
+        next_ex_date = latest["ex_date"]
+        status = "declared_yahoo"
+        confidence = 0.62
+    else:
+        intervals = [
+            (history[index]["ex_date"] - history[index - 1]["ex_date"]).days
+            for index in range(1, len(history))
+            if (history[index]["ex_date"] - history[index - 1]["ex_date"]).days > 0
+        ]
+        if not intervals:
+            return None
+        interval = round(median(intervals))
+        if interval < 20 or interval > 370:
+            return None
+        next_ex_date = latest["ex_date"]
+        while next_ex_date <= today:
+            next_ex_date = next_ex_date.fromordinal(next_ex_date.toordinal() + interval)
+        status = "estimated_from_history"
+        confidence = 0.38
+    return {
+        "ex_date": next_ex_date.isoformat(),
+        "record_date": None,
+        "payment_date": None,
+        "declaration_date": None,
+        "dividend_amount": latest["dividend_amount"],
+        "currency": None,
+        "frequency": None,
+        "status": status,
+        "source_url": None,
+        "source_title": "Yahoo Finance dividend history",
+        "confidence": confidence,
+        "notes": "Estimacion desde historico de distribuciones; revisar fuente antes de darlo por definitivo.",
+    }
+
+
+async def estimate_etf_distribution_from_history(position: dict[str, Any]) -> dict[str, Any] | None:
+    if position.get("asset_type") != "etf":
+        return None
+    terms = position_search_terms(position)
+    symbols = terms["symbols"] if isinstance(terms["symbols"], list) else []
+    for symbol in symbols:
+        history = await yahoo_dividend_history(symbol)
+        estimate = infer_next_distribution_from_history(history)
+        if estimate:
+            estimate["currency"] = position.get("asset_currency") or position.get("price_currency") or "EUR"
+            estimate["source_url"] = f"https://finance.yahoo.com/quote/{symbol}/history?filter=div"
+            estimate["notes"] = f"{estimate['notes']} Simbolo usado: {symbol}."
+            return normalize_event(estimate)
+    return None
+
+
 def dividend_calendar_system_prompt() -> str:
     return (
         "Eres un analista de datos financieros. Extraes dividendos declarados de resultados web "
         "obtenidos con Brave. Para ETFs, trata 'distribution', 'income distribution', 'dividend' "
         "y 'pay date' como equivalentes; si el ETF es acumulativo y no reparte, devuelve events vacio. "
+        "Respeta el ISIN y nombre exactos del instrumento: no mezcles ETFs UCITS europeos con tickers "
+        "similares de EEUU si el ISIN no coincide. "
         "Devuelve solo JSON valido. No inventes dividendos no declarados. "
         "Si una fuente no confirma importe y fecha, marca status='unconfirmed' y confidence bajo."
     )
@@ -190,7 +354,8 @@ def dividend_calendar_user_prompt(
 ) -> str:
     return (
         "Extrae dividendos declarados o anunciados para esta posicion. Solo eventos futuros o "
-        "muy recientes que aun puedan estar pendientes de cobro. Usa fechas ISO YYYY-MM-DD si se conocen.\n\n"
+        "muy recientes que aun puedan estar pendientes de cobro. Usa fechas ISO YYYY-MM-DD si se conocen. "
+        f"Fecha actual: {datetime.now(UTC).date().isoformat()}.\n\n"
         f"Posicion JSON:\n{json.dumps(position, ensure_ascii=False)}\n\n"
         f"Resultados Brave JSON:\n{json.dumps(search, ensure_ascii=False)}\n\n"
         "Devuelve este JSON exacto: "
@@ -307,11 +472,23 @@ async def refresh_dividend_calendar(client: Client, request: CalendarRequest) ->
         search = searches_by_key.get((position["asset_id"], position["broker_id"]))
         if not search:
             continue
+        search = await enrich_search_with_page_excerpts(position, search)
         events = await extract_dividend_events(position, search)
-        for event in events:
-            if not event.get("payment_date") and not event.get("ex_date"):
-                continue
+        valid_events = [
+            event
+            for event in events
+            if (event.get("payment_date") or event.get("ex_date"))
+            and float(event.get("dividend_amount") or 0) > 0
+        ]
+        if not valid_events:
+            estimated_event = await estimate_etf_distribution_from_history(position)
+            if estimated_event:
+                valid_events = [estimated_event]
+        for event in valid_events:
             rows.append(calendar_row(position, event, {"search": search, "event": event}))
+    asset_ids = list({position["asset_id"] for position in context["positions"]})
+    if asset_ids:
+        client.table("dividend_calendar_events").delete().in_("asset_id", asset_ids).execute()
     inserted = []
     for row in rows:
         result = (
