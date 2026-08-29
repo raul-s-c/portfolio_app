@@ -49,10 +49,10 @@ loadDotenv();
 
 const source = process.argv[2] ?? path.join("data", "legacy", "html_state.json");
 const supabaseUrl = process.env.SUPABASE_URL;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const serviceKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !serviceKey) {
-  throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in .env");
+  throw new Error("SUPABASE_URL and SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY are required in .env");
 }
 
 const legacyPayload = JSON.parse(fs.readFileSync(source, "utf8"));

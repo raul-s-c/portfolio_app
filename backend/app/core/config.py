@@ -5,7 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     supabase_url: str
-    supabase_service_role_key: str
+    supabase_service_role_key: str | None = None
+    supabase_secret_key: str | None = None
     supabase_anon_key: str | None = None
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.4-mini"
@@ -17,6 +18,13 @@ class Settings(BaseSettings):
     research_request_timeout_seconds: float = 20.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    @property
+    def supabase_backend_key(self) -> str:
+        key = self.supabase_secret_key or self.supabase_service_role_key
+        if not key:
+            raise ValueError("SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY is required")
+        return key
 
 
 @lru_cache

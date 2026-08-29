@@ -228,9 +228,12 @@ def write_to_supabase(plan: dict[str, Any]) -> None:
     load_dotenv()
 
     url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    key = os.environ.get("SUPABASE_SECRET_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
-        raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for non-dry-run migration.")
+        raise SystemExit(
+            "SUPABASE_URL and SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY are required "
+            "for non-dry-run migration."
+        )
 
     rest_url = url.rstrip("/") + "/rest/v1"
     headers = {

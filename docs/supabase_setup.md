@@ -18,10 +18,10 @@ Add these GitHub Actions secrets:
 ```text
 SUPABASE_URL
 SUPABASE_ANON_KEY
-SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_SECRET_KEY
 ```
 
-Only the backend and GitHub Actions use `SUPABASE_SERVICE_ROLE_KEY`.
+Use the Supabase `Secret key` value for `SUPABASE_SECRET_KEY`. Only the backend and GitHub Actions use it.
 
 ## 4. Frontend Access
 

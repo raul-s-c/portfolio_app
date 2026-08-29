@@ -188,14 +188,17 @@ Contenido esperado:
 ```text
 SUPABASE_URL=https://tu-proyecto.supabase.co
 SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_SECRET_KEY=...
+# Alternativa legacy:
+# SUPABASE_SERVICE_ROLE_KEY=...
 ```
 
 Regla importante:
 
 - `SUPABASE_ANON_KEY` puede usarse en frontend con RLS.
-- `SUPABASE_SERVICE_ROLE_KEY` solo backend y GitHub Actions.
-- Nunca meter `SUPABASE_SERVICE_ROLE_KEY` en React, Vite, GitHub Pages o navegador.
+- `SUPABASE_SECRET_KEY` es la `Secret key` nueva de Supabase y solo va en backend/GitHub Actions.
+- `SUPABASE_SERVICE_ROLE_KEY` sigue soportada como alternativa legacy si Supabase la acepta.
+- Nunca meter `SUPABASE_SECRET_KEY` ni `SUPABASE_SERVICE_ROLE_KEY` en React, Vite, GitHub Pages o navegador.
 
 ## GitHub Secrets
 
@@ -210,7 +213,7 @@ Crear:
 ```text
 SUPABASE_URL
 SUPABASE_ANON_KEY
-SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_SECRET_KEY
 OPENAI_API_KEY
 BRAVE_SEARCH_API_KEY
 ```
