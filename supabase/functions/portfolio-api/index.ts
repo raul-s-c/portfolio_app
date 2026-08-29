@@ -10,8 +10,8 @@ const SUPABASE_URL = requireEnv("SUPABASE_URL").replace(/\/$/, "");
 const SUPABASE_ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
 const SUPABASE_BACKEND_KEY =
   Deno.env.get("SUPABASE_SECRET_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const OPENAI_API_KEY = requireEnv("OPENAI_API_KEY");
-const BRAVE_SEARCH_API_KEY = requireEnv("BRAVE_SEARCH_API_KEY");
+const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") || "";
+const BRAVE_SEARCH_API_KEY = Deno.env.get("BRAVE_SEARCH_API_KEY") || "";
 const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.4-mini";
 const OPENAI_REPORT_MAX_OUTPUT_TOKENS = Number(Deno.env.get("OPENAI_REPORT_MAX_OUTPUT_TOKENS") || 3500);
 
@@ -117,6 +117,7 @@ function dividendCalendarQueryVariants(position: Dict, focus: string | null) {
 }
 
 async function braveSearch(query: string) {
+  if (!BRAVE_SEARCH_API_KEY) throw new Error("BRAVE_SEARCH_API_KEY missing");
   const url = new URL("https://api.search.brave.com/res/v1/web/search");
   url.searchParams.set("q", query);
   url.searchParams.set("count", "8");
@@ -243,6 +244,7 @@ function normalizeEvent(event: Dict) {
 }
 
 async function extractDividendEvents(position: Dict, search: Dict) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
   const prompt =
     "Extrae dividendos declarados o anunciados para esta posicion. Para ETFs acepta distributions. " +
     "Solo eventos futuros o muy recientes pendientes de cobro. Usa fechas ISO YYYY-MM-DD. " +

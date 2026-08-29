@@ -32,8 +32,6 @@ jobs:
           test -n "$APP_SUPABASE_URL" || (echo "Missing GitHub secret SUPABASE_URL" && exit 1)
           test -n "$APP_SUPABASE_ANON_KEY" || (echo "Missing GitHub secret SUPABASE_ANON_KEY" && exit 1)
           test -n "$APP_SUPABASE_SECRET_KEY$APP_SUPABASE_SERVICE_ROLE_KEY" || (echo "Missing GitHub secret SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY" && exit 1)
-          test -n "$APP_OPENAI_API_KEY" || (echo "Missing GitHub secret OPENAI_API_KEY" && exit 1)
-          test -n "$APP_BRAVE_SEARCH_API_KEY" || (echo "Missing GitHub secret BRAVE_SEARCH_API_KEY" && exit 1)
       - name: Sync Edge Function secrets
         shell: bash
         run: |
@@ -41,11 +39,17 @@ jobs:
             "SUPABASE_URL=$APP_SUPABASE_URL" \
             "SUPABASE_ANON_KEY=$APP_SUPABASE_ANON_KEY" \
             "SUPABASE_SECRET_KEY=${APP_SUPABASE_SECRET_KEY:-$APP_SUPABASE_SERVICE_ROLE_KEY}" \
-            "OPENAI_API_KEY=$APP_OPENAI_API_KEY" \
-            "OPENAI_MODEL=$APP_OPENAI_MODEL" \
-            "OPENAI_REPORT_MAX_OUTPUT_TOKENS=$APP_OPENAI_REPORT_MAX_OUTPUT_TOKENS" \
-            "BRAVE_SEARCH_API_KEY=$APP_BRAVE_SEARCH_API_KEY" \
             > /tmp/portfolio-api.env
+          if [ -n "$APP_OPENAI_API_KEY" ]; then
+            printf '%s\n' \
+              "OPENAI_API_KEY=$APP_OPENAI_API_KEY" \
+              "OPENAI_MODEL=$APP_OPENAI_MODEL" \
+              "OPENAI_REPORT_MAX_OUTPUT_TOKENS=$APP_OPENAI_REPORT_MAX_OUTPUT_TOKENS" \
+              >> /tmp/portfolio-api.env
+          fi
+          if [ -n "$APP_BRAVE_SEARCH_API_KEY" ]; then
+            printf '%s\n' "BRAVE_SEARCH_API_KEY=$APP_BRAVE_SEARCH_API_KEY" >> /tmp/portfolio-api.env
+          fi
           supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" --env-file /tmp/portfolio-api.env
       - name: Deploy portfolio API
         run: supabase functions deploy portfolio-api --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
