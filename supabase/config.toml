@@ -1,0 +1,4 @@
+project_id = "nasuybwjddcrrmekcslu"
+
+[functions.portfolio-api]
+verify_jwt = false

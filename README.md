@@ -315,7 +315,13 @@ La app remota sigue protegida por Supabase Auth/RLS. Las claves privadas no se p
 
 ## Backend Remoto
 
-Para que acciones como `Actualizar calendario` funcionen sin tu ordenador, despliega la Edge Function:
+Para que acciones como `Actualizar calendario` funcionen sin tu ordenador, despliega la Edge Function. La forma recomendada es desde GitHub Actions:
+
+1. En Supabase, crea un access token personal.
+2. En GitHub, crea el secret `SUPABASE_ACCESS_TOKEN`.
+3. En GitHub, abre `Actions -> Deploy Supabase Functions -> Run workflow`.
+
+El workflow `.github/workflows/deploy_supabase_functions.yml` ejecuta:
 
 ```bash
 supabase functions deploy portfolio-api --project-ref nasuybwjddcrrmekcslu
