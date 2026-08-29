@@ -190,6 +190,8 @@ type DividendForm = {
   sourceNote: string;
 };
 
+type TotalColumn = number | { index: number; format?: "money" | "number" | "percent" };
+
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
   { id: "positions", label: "Posiciones" },
@@ -1007,7 +1009,7 @@ function DashboardView({
         <h2>Todas las posiciones</h2>
         <SimpleTable
           columns={["Ticker", "Activo", "Broker", "Valor EUR", "Peso", "P&G"]}
-          totalColumns={[3, 5]}
+          totalColumns={[{ index: 3, format: "money" }, { index: 5, format: "money" }]}
           rows={positions.map((row) => [
             row.symbol,
             row.name,
@@ -1022,7 +1024,7 @@ function DashboardView({
         <h2>Resumen ETF</h2>
         <SimpleTable
           columns={["Ticker", "Activo", "Broker", "Valor EUR", "Peso ETF", "P&G"]}
-          totalColumns={[3, 5]}
+          totalColumns={[{ index: 3, format: "money" }, { index: 5, format: "money" }]}
           rows={etfPositions.map((row) => [
             row.symbol,
             row.name,
@@ -1109,7 +1111,7 @@ function PositionsView({
           <span className={row.dailyGain >= 0 ? "good" : "bad"}>{formatMoney(row.dailyGain)}</span>,
           row.priced_at ? new Date(row.priced_at).toLocaleString("es-ES") : "",
         ])}
-        totalColumns={[7, 8, 9, 10]}
+        totalColumns={[{ index: 7, format: "money" }, { index: 8, format: "money" }, { index: 9, format: "money" }, { index: 10, format: "money" }]}
       />
     </section>
   );
@@ -1163,7 +1165,7 @@ function TransactionsView({
         </div>
         <EditableTable
           columns={["Fecha", "Ticker", "Tipo", "Cantidad", "Importe", "Fees", "Tax", "Moneda", "Broker", "Nota", ""]}
-          totalColumns={[3, 4, 5, 6]}
+          totalColumns={[{ index: 3, format: "number" }, { index: 4, format: "money" }, { index: 5, format: "money" }, { index: 6, format: "money" }]}
           rows={rows.map((row) => {
             const draft = drafts[row.id] ?? transactionFormFromRow(row);
             const setDraft = (patch: Partial<TransactionForm>) => setDrafts((current) => ({ ...current, [row.id]: { ...draft, ...patch } }));
@@ -1405,7 +1407,7 @@ function DividendsView({
         </div>
         <EditableTable
           columns={["Fecha", "Ticker", "Bruto", "Tax", "Neto", "Moneda", "Broker", "Nota", ""]}
-          totalColumns={[2, 3, 4]}
+          totalColumns={[{ index: 2, format: "money" }, { index: 3, format: "money" }, { index: 4, format: "money" }]}
           rows={rows.map((row) => {
             const draft = drafts[row.id] ?? dividendFormFromRow(row);
             const setDraft = (patch: Partial<DividendForm>) => setDrafts((current) => ({ ...current, [row.id]: { ...draft, ...patch } }));
@@ -1578,7 +1580,7 @@ function EtfView({
         <h2>Objetivos ETF</h2>
         <EditableTable
           columns={["Ticker", "Nombre", "ISIN", "Proveedor", "Peso actual", "Peso objetivo %", "Diferencia", "EUR aprox."]}
-          totalColumns={[7]}
+          totalColumns={[{ index: 7, format: "money" }]}
           rows={etfs.map((row, index) => {
             const symbol = String(row.symbol ?? row.ticker ?? "");
             const position = bySymbol.get(symbol);
@@ -1626,10 +1628,10 @@ function CashView({
   const latestMonth = latestMonthWithAccountValue(accounts) ?? months.at(-1)?.key ?? "";
   const [selectedMonth, setSelectedMonth] = useState(latestMonth || months.at(-1)?.key || "");
   const activeMonth = selectedMonth || latestMonth || months.at(-1)?.key || "";
-  const cashTotal = accounts.reduce((acc, account) => acc + Number(account.values?.[activeMonth] ?? 0), 0);
-  const plannedNet = plan.reduce((acc, row) => acc + Number(row.values?.[activeMonth] ?? 0), 0);
-  const plannedIncome = plan.reduce((acc, row) => acc + Math.max(0, Number(row.values?.[activeMonth] ?? 0)), 0);
-  const plannedExpenses = plan.reduce((acc, row) => acc + Math.min(0, Number(row.values?.[activeMonth] ?? 0)), 0);
+  const cashTotal = accounts.reduce((acc, account) => acc + toNumber(account.values?.[activeMonth] ?? 0), 0);
+  const plannedNet = plan.reduce((acc, row) => acc + toNumber(row.values?.[activeMonth] ?? 0), 0);
+  const plannedIncome = plan.reduce((acc, row) => acc + Math.max(0, toNumber(row.values?.[activeMonth] ?? 0)), 0);
+  const plannedExpenses = plan.reduce((acc, row) => acc + Math.min(0, toNumber(row.values?.[activeMonth] ?? 0)), 0);
   const applyCash = (mutator: (draft: LegacyCash) => void) => {
     const draft = cloneCash(cash);
     mutator(draft);
@@ -1721,7 +1723,7 @@ function CashView({
           </div>
           <EditableTable
             columns={["Cuenta", "Saldo"]}
-            totalColumns={[1]}
+            totalColumns={[{ index: 1, format: "money" }]}
             rows={accounts.map((account, index) => [
               <input
                 value={account.name}
@@ -1731,7 +1733,7 @@ function CashView({
                   })
                 }
               />,
-              <input value={account.values?.[activeMonth] ?? 0} onChange={(event) => changeAccount(index, activeMonth, event.target.value)} inputMode="decimal" />,
+              <input value={formatInputNumber(account.values?.[activeMonth] ?? 0)} onChange={(event) => changeAccount(index, activeMonth, event.target.value)} inputMode="decimal" />,
             ])}
           />
         </div>
@@ -1751,7 +1753,7 @@ function CashView({
           </div>
           <EditableTable
             columns={["Concepto", "Importe"]}
-            totalColumns={[1]}
+            totalColumns={[{ index: 1, format: "money" }]}
             rows={plan.map((row, index) => [
               <input
                 value={row.name}
@@ -1761,7 +1763,7 @@ function CashView({
                   })
                 }
               />,
-              <input value={row.values?.[activeMonth] ?? 0} onChange={(event) => changePlan(index, activeMonth, event.target.value)} inputMode="decimal" />,
+              <input value={formatInputNumber(row.values?.[activeMonth] ?? 0)} onChange={(event) => changePlan(index, activeMonth, event.target.value)} inputMode="decimal" />,
             ])}
           />
         </div>
@@ -1782,11 +1784,11 @@ function CashView({
         </div>
         <EditableTable
           columns={["Objetivo", "Actual", "Meta", "Fecha", "Mensual", ""]}
-          totalColumns={[1, 2, 4]}
+          totalColumns={[{ index: 1, format: "money" }, { index: 2, format: "money" }, { index: 4, format: "money" }]}
           rows={objectives.map((row, index) => [
             <input value={row.name} onChange={(event) => changeObjective(index, "name", event.target.value)} />,
-            <input value={row.current ?? 0} onChange={(event) => changeObjective(index, "current", event.target.value)} inputMode="decimal" />,
-            <input value={row.target ?? 0} onChange={(event) => changeObjective(index, "target", event.target.value)} inputMode="decimal" />,
+            <input value={formatInputNumber(row.current ?? 0)} onChange={(event) => changeObjective(index, "current", event.target.value)} inputMode="decimal" />,
+            <input value={formatInputNumber(row.target ?? 0)} onChange={(event) => changeObjective(index, "target", event.target.value)} inputMode="decimal" />,
             <input value={row.targetDate ?? ""} onChange={(event) => changeObjective(index, "targetDate", event.target.value)} placeholder="YYYY-MM" />,
             formatMoney(monthlyObjectiveAdd(row)),
             <button
@@ -1864,7 +1866,7 @@ function CashView({
                   </td>
                   {months.map((month) => (
                     <td key={month.key}>
-                      <input value={row.values?.[month.key] ?? 0} onChange={(event) => changePlan(index, month.key, event.target.value)} inputMode="decimal" />
+                      <input value={formatInputNumber(row.values?.[month.key] ?? 0)} onChange={(event) => changePlan(index, month.key, event.target.value)} inputMode="decimal" />
                       <input
                         className="comment-input"
                         value={row.comments?.[month.key] ?? ""}
@@ -1918,7 +1920,7 @@ function CashView({
                   </td>
                   {months.map((month) => (
                     <td key={month.key}>
-                      <input value={account.values?.[month.key] ?? 0} onChange={(event) => changeAccount(index, month.key, event.target.value)} inputMode="decimal" />
+                      <input value={formatInputNumber(account.values?.[month.key] ?? 0)} onChange={(event) => changeAccount(index, month.key, event.target.value)} inputMode="decimal" />
                       <input
                         className="comment-input"
                         value={account.comments?.[month.key] ?? ""}
@@ -1950,15 +1952,13 @@ function PropertyView({
     <section className="panel">
       <h2>Seguimiento piso</h2>
       <SimpleTable
-        columns={["Fecha", "Valor mercado", "Aportaciones", "Rendimiento", "Dividendos", "Liquido"]}
-        totalColumns={[1, 2, 4]}
+        columns={["Fecha", "Valor piso", "Hipoteca", "Deuda familiar", "Equity"]}
         rows={rows.map((row) => [
           row.date ?? row.Fecha ?? row.Mes ?? "",
-          formatMoney(Number(row.propertyValue ?? row["Valor piso"] ?? row["Valor mercado"] ?? 0)),
-          formatMoney(Number(row.mortgage ?? row.Hipoteca ?? row["Valor aportaciones"] ?? 0)),
-          formatPercent(Number(row.Rendimiento ?? 0)),
-          formatMoney(Number(row["Dividendos recibidos"] ?? 0)),
-          row["Liquido / No"] ?? "",
+          formatMoney(toNumber(row.propertyValue ?? row["Valor piso"] ?? row["Valor mercado"] ?? 0)),
+          formatMoney(toNumber(row.mortgage ?? row.Hipoteca ?? row["Valor aportaciones"] ?? 0)),
+          formatMoney(toNumber(row.familyDebt ?? row["Deuda familiar"] ?? 0)),
+          formatMoney(toNumber(row.equity ?? row.Equity ?? (toNumber(row["Valor mercado"] ?? 0) - toNumber(row["Valor aportaciones"] ?? 0)))),
         ])}
       />
     </section>
@@ -2075,8 +2075,8 @@ function WealthView({
           </div>
         </div>
         <div className="summary-grid compact">
-          <Metric label="Valor mercado periodo" value={formatMoney(Number(currentSummary?.["Total valor mercado"] ?? 0))} />
-          <Metric label="Aportaciones periodo" value={formatMoney(Number(currentSummary?.["total aportaciones"] ?? 0))} />
+          <Metric label="Valor mercado periodo" value={formatMoney(toNumber(currentSummary?.["Total valor mercado"] ?? 0))} />
+          <Metric label="Aportaciones periodo" value={formatMoney(toNumber(currentSummary?.["total aportaciones"] ?? 0))} />
           <Metric label="Acciones dashboard" value={formatMoney(stockMarket)} />
           <Metric label="Filas del periodo" value={monthRows.length} />
         </div>
@@ -2089,14 +2089,14 @@ function WealthView({
         </div>
         <EditableTable
           columns={["Tipo", "Liquido", "Aportaciones", "Mercado", "Dividendos", "Rendimiento"]}
-          totalColumns={[2, 3, 4]}
+          totalColumns={[{ index: 2, format: "money" }, { index: 3, format: "money" }, { index: 4, format: "money" }]}
           rows={monthRows.map((row, index) => [
             <input value={String(row.Tipo ?? "")} onChange={(event) => updateMonthRow(index, "Tipo", event.target.value)} />,
             <input value={String(row["Liquido / No"] ?? "")} onChange={(event) => updateMonthRow(index, "Liquido / No", event.target.value)} />,
-            <input value={Number(row["Valor aportaciones"] ?? 0)} onChange={(event) => updateMonthRow(index, "Valor aportaciones", event.target.value)} inputMode="decimal" />,
-            <input value={Number(row["Valor mercado"] ?? 0)} onChange={(event) => updateMonthRow(index, "Valor mercado", event.target.value)} inputMode="decimal" />,
-            <input value={Number(row["Dividendos recibidos"] ?? 0)} onChange={(event) => updateMonthRow(index, "Dividendos recibidos", event.target.value)} inputMode="decimal" />,
-            <input value={Number(row.Rendimiento ?? 0)} onChange={(event) => updateMonthRow(index, "Rendimiento", event.target.value)} inputMode="decimal" />,
+            <input value={formatInputNumber(row["Valor aportaciones"] ?? 0)} onChange={(event) => updateMonthRow(index, "Valor aportaciones", event.target.value)} inputMode="decimal" />,
+            <input value={formatInputNumber(row["Valor mercado"] ?? 0)} onChange={(event) => updateMonthRow(index, "Valor mercado", event.target.value)} inputMode="decimal" />,
+            <input value={formatInputNumber(row["Dividendos recibidos"] ?? 0)} onChange={(event) => updateMonthRow(index, "Dividendos recibidos", event.target.value)} inputMode="decimal" />,
+            <input value={formatInputNumber(row.Rendimiento ?? 0)} onChange={(event) => updateMonthRow(index, "Rendimiento", event.target.value)} inputMode="decimal" />,
           ])}
         />
       </section>
@@ -2104,14 +2104,13 @@ function WealthView({
         <h2>Historico completo importado</h2>
         <SimpleTable
           columns={["Mes", "Aportaciones", "Valor mercado", "Rendimiento", "Dividendos", "Incremento mensual"]}
-          totalColumns={[1, 2, 4, 5]}
           rows={summary.map((row) => [
             row.Mes ?? row.Code ?? "",
-            formatMoney(Number(row["total aportaciones"] ?? 0)),
-            formatMoney(Number(row["Total valor mercado"] ?? 0)),
-            formatPercent(Number(row.Rendimiento ?? 0)),
-            formatMoney(Number(row["Dividendos recibidos"] ?? 0)),
-            formatMoney(Number(row["incremento mensual"] ?? 0)),
+            formatMoney(toNumber(row["total aportaciones"] ?? 0)),
+            formatMoney(toNumber(row["Total valor mercado"] ?? 0)),
+            formatPercent(toNumber(row.Rendimiento ?? 0)),
+            formatMoney(toNumber(row["Dividendos recibidos"] ?? 0)),
+            formatMoney(toNumber(row["incremento mensual"] ?? 0)),
           ])}
         />
       </section>
@@ -2311,7 +2310,7 @@ function SimpleTable({
 }: {
   columns: string[];
   rows: Array<Array<React.ReactNode>>;
-  totalColumns?: number[];
+  totalColumns?: TotalColumn[];
 }) {
   const [filters, setFilters] = useState<Record<number, string>>({});
   const filteredRows = useMemo(
@@ -2366,7 +2365,7 @@ function SimpleTable({
           <tfoot>
             <tr>
               {columns.map((column, index) => (
-                <th key={`${column}-total`}>{index === 0 ? "Subtotal filtrado" : totalColumns.includes(index) ? formatMoney(sumColumn(filteredRows, index)) : ""}</th>
+                <th key={`${column}-total`}>{index === 0 ? "Subtotal filtrado" : formatTableTotal(filteredRows, totalColumns, index)}</th>
               ))}
             </tr>
           </tfoot>
@@ -2383,7 +2382,7 @@ function EditableTable({
 }: {
   columns: string[];
   rows: Array<Array<React.ReactNode>>;
-  totalColumns?: number[];
+  totalColumns?: TotalColumn[];
 }) {
   const [filters, setFilters] = useState<Record<number, string>>({});
   const filteredRows = useMemo(
@@ -2438,7 +2437,7 @@ function EditableTable({
           <tfoot>
             <tr>
               {columns.map((column, index) => (
-                <th key={`${column}-total`}>{index === 0 ? "Subtotal filtrado" : totalColumns.includes(index) ? formatMoney(sumColumn(filteredRows, index)) : ""}</th>
+                <th key={`${column}-total`}>{index === 0 ? "Subtotal filtrado" : formatTableTotal(filteredRows, totalColumns, index)}</th>
               ))}
             </tr>
           </tfoot>
@@ -2477,7 +2476,7 @@ function WideMatrix({ firstColumn, columns, rows }: { firstColumn: string; colum
 
 function LineChart({ rows, metric }: { rows: WealthRow[]; metric: string }) {
   const values = rows
-    .map((row) => ({ date: String(row.Mes ?? ""), value: Number(row[metric] ?? 0) }))
+    .map((row) => ({ date: String(row.Mes ?? ""), value: toNumber(row[metric] ?? 0) }))
     .filter((row) => row.date && Number.isFinite(row.value));
   if (values.length === 0) return <p className="empty">Sin datos para graficar.</p>;
   const width = 960;
@@ -2515,10 +2514,10 @@ function transactionFormFromRow(row: Transaction): TransactionForm {
     brokerId: row.broker_id,
     type: row.type,
     tradeDate: row.trade_date,
-    quantity: String(Math.abs(Number(row.quantity ?? 0))),
-    grossAmount: String(Number(row.gross_amount ?? 0)),
-    fees: String(Number(row.fees ?? 0)),
-    tax: String(Number(row.tax ?? 0)),
+    quantity: formatInputNumber(Math.abs(toNumber(row.quantity ?? 0))),
+    grossAmount: formatInputNumber(row.gross_amount),
+    fees: formatInputNumber(row.fees),
+    tax: formatInputNumber(row.tax),
     currency: row.currency,
     sourceNote: noteFromRaw(row.raw_payload),
   };
@@ -2529,9 +2528,9 @@ function dividendFormFromRow(row: Dividend): DividendForm {
     assetId: row.asset_id,
     brokerId: row.broker_id,
     payDate: row.pay_date,
-    netAmount: String(Number(row.net_amount ?? 0)),
-    grossAmount: String(Number(row.gross_amount ?? 0)),
-    tax: String(Number(row.tax ?? 0)),
+    netAmount: formatInputNumber(row.net_amount),
+    grossAmount: formatInputNumber(row.gross_amount),
+    tax: formatInputNumber(row.tax),
     currency: row.currency,
     sourceNote: noteFromRaw(row.raw_payload),
   };
@@ -2552,11 +2551,17 @@ function sumColumn(rows: Array<Array<React.ReactNode>>, index: number) {
   return rows.reduce((acc, row) => acc + numericCellValue(row[index]), 0);
 }
 
+function formatTableTotal(rows: Array<Array<React.ReactNode>>, totalColumns: TotalColumn[], index: number) {
+  const config = totalColumns.map((column) => (typeof column === "number" ? { index: column, format: "money" as const } : column)).find((column) => column.index === index);
+  if (!config) return "";
+  const value = sumColumn(rows, index);
+  if (config.format === "number") return formatNumber(value);
+  if (config.format === "percent") return formatPercent(value);
+  return formatMoney(value);
+}
+
 function numericCellValue(value: React.ReactNode): number {
-  const raw = cellText(value).replace(/\s/g, "").replace(/€/g, "").replace(/%/g, "");
-  const text = raw.includes(",") ? raw.replace(/\./g, "").replace(",", ".") : raw;
-  const match = text.match(/-?\d+(?:\.\d+)?/);
-  return match ? Number(match[0]) : 0;
+  return parseLocaleNumber(cellText(value));
 }
 
 function cloneCash(cash?: LegacyCash): LegacyCash {
@@ -2593,11 +2598,11 @@ function ensureCashYear(cash: LegacyCash, year: number) {
 }
 
 function monthlyObjectiveAdd(row: NonNullable<LegacyCash["objectives"]>[number]) {
-  const target = Number(row.target) || 0;
-  const current = Number(row.current) || 0;
+  const target = toNumber(row.target) || 0;
+  const current = toNumber(row.current) || 0;
   const remaining = Math.max(0, target - current);
   const targetDate = String(row.targetDate ?? "").slice(0, 7);
-  if (!/^\d{4}-\d{2}$/.test(targetDate)) return Number(row.simulationAdd) || remaining;
+  if (!/^\d{4}-\d{2}$/.test(targetDate)) return toNumber(row.simulationAdd) || remaining;
   const now = new Date();
   const startYear = now.getFullYear();
   const startMonth = now.getMonth() + 1;
@@ -2630,10 +2635,10 @@ function recomputeWealthSummary(rows: WealthRow[]) {
   const months = [...new Set(rows.map((row) => monthKey(row.Fecha)).filter(Boolean))].sort();
   return months.map((month, index) => {
     const monthRows = rows.filter((row) => monthKey(row.Fecha) === month);
-    const aportaciones = monthRows.reduce((acc, row) => acc + Number(row["Valor aportaciones"] ?? 0), 0);
-    const mercado = monthRows.reduce((acc, row) => acc + Number(row["Valor mercado"] ?? 0), 0);
-    const dividendos = monthRows.reduce((acc, row) => acc + Number(row["Dividendos recibidos en el mes"] ?? 0), 0);
-    const previous = index > 0 ? rows.filter((row) => monthKey(row.Fecha) === months[index - 1]).reduce((acc, row) => acc + Number(row["Valor mercado"] ?? 0), 0) : null;
+    const aportaciones = monthRows.reduce((acc, row) => acc + toNumber(row["Valor aportaciones"] ?? 0), 0);
+    const mercado = monthRows.reduce((acc, row) => acc + toNumber(row["Valor mercado"] ?? 0), 0);
+    const dividendos = monthRows.reduce((acc, row) => acc + toNumber(row["Dividendos recibidos en el mes"] ?? 0), 0);
+    const previous = index > 0 ? rows.filter((row) => monthKey(row.Fecha) === months[index - 1]).reduce((acc, row) => acc + toNumber(row["Valor mercado"] ?? 0), 0) : null;
     return {
       Code: Number(`${month.slice(5, 7)}${month.slice(0, 4)}`),
       Mes: monthEndDate(month),
@@ -2662,7 +2667,7 @@ function latestMonthWithAccountValue(accounts: NonNullable<LegacyCash["accounts"
   return [...new Set(accounts.flatMap((account) => Object.keys(account.values ?? {})))]
     .sort()
     .reverse()
-    .find((month) => accounts.some((account) => Number(account.values?.[month] ?? 0) !== 0));
+    .find((month) => accounts.some((account) => toNumber(account.values?.[month] ?? 0) !== 0));
 }
 
 function latestWealthMonth(rows: WealthRow[]) {
@@ -2707,7 +2712,36 @@ function signedNumber(value: string, type: TransactionForm["type"]) {
 
 function toNumber(value: string | number | null | undefined) {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-  return Number(String(value ?? "").replace(",", ".")) || 0;
+  return parseLocaleNumber(value);
+}
+
+function formatInputNumber(value: string | number | null | undefined) {
+  const number = toNumber(value);
+  return Number.isFinite(number) ? number.toLocaleString("es-ES", { maximumFractionDigits: 6 }) : "";
+}
+
+function parseLocaleNumber(value: string | number | null | undefined) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const raw = String(value ?? "")
+    .trim()
+    .replace(/\s/g, "")
+    .replace(/€/g, "")
+    .replace(/%/g, "");
+  if (!raw) return 0;
+  const lastComma = raw.lastIndexOf(",");
+  const lastDot = raw.lastIndexOf(".");
+  let normalized = raw;
+  if (lastComma >= 0 && lastDot >= 0) {
+    normalized = lastComma > lastDot ? raw.replace(/\./g, "").replace(",", ".") : raw.replace(/,/g, "");
+  } else if (lastComma >= 0) {
+    const decimals = raw.length - lastComma - 1;
+    normalized = decimals === 3 && raw.slice(0, lastComma).length > 0 ? raw.replace(/,/g, "") : raw.replace(",", ".");
+  } else if (lastDot >= 0) {
+    const decimals = raw.length - lastDot - 1;
+    normalized = decimals === 3 && raw.slice(0, lastDot).length > 0 ? raw.replace(/\./g, "") : raw;
+  }
+  const match = normalized.match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : 0;
 }
 
 async function digest(value: string) {
@@ -2717,20 +2751,25 @@ async function digest(value: string) {
     .join("");
 }
 
-function formatNumber(value: number | null | undefined) {
-  return Number(value ?? 0).toLocaleString("es-ES", { maximumFractionDigits: 6 });
+function formatNumber(value: string | number | null | undefined) {
+  return toNumber(value).toLocaleString("es-ES", { maximumFractionDigits: 6 });
 }
 
-function formatPercent(value: number | null | undefined) {
-  return Number(value ?? 0).toLocaleString("es-ES", { style: "percent", maximumFractionDigits: 2 });
+function formatPercent(value: string | number | null | undefined) {
+  return toNumber(value).toLocaleString("es-ES", { style: "percent", maximumFractionDigits: 2 });
 }
 
-function formatMoney(value: number | null | undefined) {
-  return Number(value ?? 0).toLocaleString("es-ES", { style: "currency", currency: "EUR" });
+function formatMoney(value: string | number | null | undefined) {
+  return toNumber(value).toLocaleString("es-ES", { style: "currency", currency: "EUR" });
 }
 
-function formatPlainMoney(value: number | null | undefined, currency: string) {
-  return Number(value ?? 0).toLocaleString("es-ES", { style: "currency", currency });
+function formatPlainMoney(value: string | number | null | undefined, currency: string) {
+  return toNumber(value).toLocaleString("es-ES", { style: "currency", currency: normalizeCurrency(currency) });
+}
+
+function normalizeCurrency(currency: string | null | undefined) {
+  const value = String(currency ?? "EUR").trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(value) ? value : "EUR";
 }
 
 declare global {

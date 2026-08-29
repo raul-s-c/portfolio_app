@@ -1,7 +1,7 @@
 :root {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #18202f;
-  background: #f5f7f8;
+  color: #17181c;
+  background: #f6f7f9;
 }
 
 *,
@@ -21,13 +21,15 @@ select {
 }
 
 button {
-  border: 1px solid #172033;
-  border-radius: 6px;
-  background: #172033;
+  border: 1px solid #1d1d1f;
+  border-radius: 8px;
+  background: #1d1d1f;
   color: #ffffff;
-  min-height: 38px;
-  padding: 8px 13px;
+  min-height: 36px;
+  padding: 8px 14px;
   cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
   white-space: nowrap;
 }
 
@@ -38,7 +40,7 @@ button:disabled {
 
 button.ghost {
   background: #ffffff;
-  color: #172033;
+  color: #1d1d1f;
 }
 
 button.danger {
@@ -55,12 +57,20 @@ input,
 select {
   width: 100%;
   min-width: 0;
-  border: 1px solid #cfd6df;
-  border-radius: 6px;
-  background: #ffffff;
-  color: #18202f;
-  min-height: 38px;
-  padding: 8px 10px;
+  border: 1px solid #d7dce3;
+  border-radius: 8px;
+  background: #fbfcfd;
+  color: #17181c;
+  min-height: 36px;
+  padding: 7px 10px;
+}
+
+input:focus,
+select:focus,
+button:focus-visible {
+  outline: 2px solid rgba(0, 122, 255, 0.24);
+  outline-offset: 1px;
+  border-color: #7ab7ff;
 }
 
 label {
@@ -72,9 +82,9 @@ label {
 }
 
 .app-shell {
-  max-width: 1680px;
+  max-width: 1760px;
   margin: 0 auto;
-  padding: 24px 32px;
+  padding: 22px 32px 40px;
 }
 
 .topbar {
@@ -92,8 +102,9 @@ p {
 }
 
 h1 {
-  font-size: 28px;
+  font-size: 30px;
   line-height: 1.1;
+  letter-spacing: 0;
 }
 
 h2 {
@@ -126,19 +137,21 @@ h2 {
 .tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 14px;
 }
 
 .tabs button {
-  background: #ffffff;
-  border-color: #cfd6df;
-  color: #172033;
+  background: rgba(255, 255, 255, 0.72);
+  border-color: #d8dde5;
+  color: #1d1d1f;
+  min-height: 34px;
+  padding: 7px 12px;
 }
 
 .tabs button.active {
-  background: #172033;
-  border-color: #172033;
+  background: #1d1d1f;
+  border-color: #1d1d1f;
   color: #ffffff;
 }
 
@@ -175,13 +188,14 @@ h2 {
 .summary-grid article,
 .panel {
   background: #ffffff;
-  border: 1px solid #dfe4ea;
-  border-radius: 8px;
+  border: 1px solid #e1e5eb;
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.04);
 }
 
 .summary-grid article {
-  min-height: 92px;
-  padding: 15px;
+  min-height: 86px;
+  padding: 16px;
 }
 
 .summary-grid span {
@@ -193,7 +207,8 @@ h2 {
 }
 
 .summary-grid strong {
-  font-size: 21px;
+  font-size: 22px;
+  letter-spacing: 0;
 }
 
 .good {
@@ -206,7 +221,7 @@ h2 {
 
 .panel {
   overflow: hidden;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .panel > h2 {
@@ -218,9 +233,9 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 58px;
-  padding: 13px 15px;
-  border-bottom: 1px solid #e7ebef;
+  min-height: 60px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #edf0f4;
 }
 
 .panel-header input,
@@ -253,7 +268,7 @@ h2 {
 .form-panel {
   display: grid;
   gap: 12px;
-  padding: 15px;
+  padding: 16px;
 }
 
 .form-row {
@@ -271,8 +286,9 @@ h2 {
 table {
   width: 100%;
   min-width: 680px;
+  background: #ffffff;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 12.5px;
   table-layout: auto;
 }
 
@@ -282,9 +298,9 @@ table {
 
 th,
 td {
-  padding: 8px 9px;
+  padding: 9px 10px;
   text-align: right;
-  border-bottom: 1px solid #eef1f4;
+  border-bottom: 1px solid #edf0f4;
   vertical-align: middle;
 }
 
@@ -300,14 +316,15 @@ td:nth-child(3) {
 thead th {
   position: sticky;
   top: 0;
-  color: #657184;
-  font-weight: 700;
-  background: #fafbfc;
+  color: #657083;
+  font-size: 12px;
+  font-weight: 750;
+  background: #fbfcfd;
 }
 
 .filter-row th {
   top: 39px;
-  background: #f5f7f9;
+  background: #f7f8fa;
 }
 
 .filter-row input {
@@ -340,7 +357,7 @@ td select {
 }
 
 tfoot th {
-  background: #f1f4f7;
+  background: #f6f7f9;
   font-weight: 800;
   white-space: nowrap;
 }
