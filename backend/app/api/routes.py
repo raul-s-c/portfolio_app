@@ -92,3 +92,27 @@ async def create_rebalance_report(payload: dict) -> dict:
         max_web_results=int(payload.get("max_web_results") or 6),
     )
     return await generate_research_report(client, request)
+
+
+@router.post("/reports/groups")
+async def create_group_report(payload: dict) -> dict:
+    client = service_client()
+    request = ReportRequest(
+        report_type="portfolio_group_analysis",
+        focus=payload.get("focus"),
+        max_positions=int(payload.get("max_positions") or 250),
+        max_web_results=int(payload.get("max_web_results") or 10),
+    )
+    return await generate_research_report(client, request)
+
+
+@router.post("/reports/etf-resilient")
+async def create_etf_resilient_report(payload: dict) -> dict:
+    client = service_client()
+    request = ReportRequest(
+        report_type="etf_resilient_portfolio",
+        focus=payload.get("focus"),
+        max_positions=int(payload.get("max_positions") or 250),
+        max_web_results=int(payload.get("max_web_results") or 12),
+    )
+    return await generate_research_report(client, request)

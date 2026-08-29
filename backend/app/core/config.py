@@ -8,7 +8,9 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     supabase_anon_key: str | None = None
     openai_api_key: str | None = None
-    openai_model: str = "gpt-4.1-mini"
+    openai_model: str = "gpt-5.4-mini"
+    openai_report_max_output_tokens: int = 3500
+    openai_daily_token_budget: int = 750_000
     brave_search_api_key: str | None = None
     brave_search_endpoint: str = "https://api.search.brave.com/res/v1/web/search"
     price_request_timeout_seconds: float = 8.0

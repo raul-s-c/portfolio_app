@@ -376,6 +376,12 @@ td select {
   width: 100%;
 }
 
+td input[type="checkbox"] {
+  width: 18px;
+  min-height: 18px;
+  accent-color: #1d1d1f;
+}
+
 .comment-input {
   margin-top: 5px;
   color: #657184;

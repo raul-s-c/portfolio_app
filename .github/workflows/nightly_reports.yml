@@ -2,17 +2,19 @@ name: Nightly reports
 
 on:
   schedule:
-    - cron: "30 22 * * 1-5"
+    - cron: "30 8 * * 0"
   workflow_dispatch:
     inputs:
       report_type:
         description: Report type
         required: true
-        default: portfolio_periodic
+        default: portfolio_group_analysis
         type: choice
         options:
           - portfolio_periodic
           - rebalance_opportunity
+          - portfolio_group_analysis
+          - etf_resilient_portfolio
       focus:
         description: Optional focus
         required: false
@@ -26,7 +28,9 @@ jobs:
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-mini' }}
+      OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5.4-mini' }}
+      OPENAI_REPORT_MAX_OUTPUT_TOKENS: ${{ vars.OPENAI_REPORT_MAX_OUTPUT_TOKENS || '3500' }}
+      OPENAI_DAILY_TOKEN_BUDGET: ${{ vars.OPENAI_DAILY_TOKEN_BUDGET || '750000' }}
       BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +41,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e backend
-      - name: Generate portfolio report
+      - name: Generate selected report
+        if: github.event_name == 'workflow_dispatch'
         run: |
-          python scripts/nightly_reports.py --type "${{ github.event.inputs.report_type || 'portfolio_periodic' }}" --focus "${{ github.event.inputs.focus || '' }}"
+          python scripts/nightly_reports.py --type "${{ github.event.inputs.report_type }}" --focus "${{ github.event.inputs.focus || '' }}"
+      - name: Generate Sunday portfolio reports
+        if: github.event_name == 'schedule'
+        run: |
+          python scripts/nightly_reports.py --type portfolio_group_analysis
+          python scripts/nightly_reports.py --type etf_resilient_portfolio --focus "Cartera ETF MyInvestor resistente para largo plazo, dividendo inflacion +2% y crecimiento esperado +4/6% anual"

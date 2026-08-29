@@ -42,6 +42,12 @@ type Identifier = {
   is_primary: boolean;
 };
 
+type AssetTag = {
+  asset_id: string;
+  tag: string;
+  notes: string | null;
+};
+
 type Position = {
   asset_id: string;
   broker_id: string;
@@ -126,7 +132,7 @@ type ResolutionQueueItem = {
 
 type ResearchReport = {
   id: string;
-  report_type: "portfolio_periodic" | "rebalance_opportunity";
+  report_type: "portfolio_periodic" | "rebalance_opportunity" | "portfolio_group_analysis" | "etf_resilient_portfolio";
   title: string;
   period_start: string | null;
   period_end: string | null;
@@ -252,6 +258,7 @@ function App() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [identifiers, setIdentifiers] = useState<Identifier[]>([]);
+  const [assetTags, setAssetTags] = useState<AssetTag[]>([]);
   const [brokers, setBrokers] = useState<Broker[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [dividends, setDividends] = useState<Dividend[]>([]);
@@ -311,6 +318,7 @@ function App() {
     setPositions([]);
     setAssets([]);
     setIdentifiers([]);
+    setAssetTags([]);
     setBrokers([]);
     setTransactions([]);
     setDividends([]);
@@ -328,6 +336,7 @@ function App() {
       positionsResult,
       assetsResult,
       identifiersResult,
+      assetTagsResult,
       brokersResult,
       transactionsResult,
       dividendsResult,
@@ -340,6 +349,7 @@ function App() {
       supabase.from("v_open_positions").select("*").order("name"),
       supabase.from("assets").select("id,asset_type,name,isin,currency").order("name"),
       supabase.from("asset_identifiers").select("asset_id,provider,symbol,exchange,is_primary").order("symbol"),
+      supabase.from("asset_tags").select("asset_id,tag,notes").order("tag"),
       supabase.from("brokers").select("id,name").order("name"),
       supabase.from("transactions").select("*").order("trade_date", { ascending: false }).limit(500),
       supabase.from("dividends").select("*").order("pay_date", { ascending: false }).limit(500),
@@ -375,6 +385,7 @@ function App() {
       setPositions((positionsResult.data ?? []) as Position[]);
       setAssets((assetsResult.data ?? []) as Asset[]);
       setIdentifiers((identifiersResult.data ?? []) as Identifier[]);
+      setAssetTags(assetTagsResult.error ? [] : ((assetTagsResult.data ?? []) as AssetTag[]));
       setBrokers((brokersResult.data ?? []) as Broker[]);
       setTransactions((transactionsResult.data ?? []) as Transaction[]);
       setDividends((dividendsResult.data ?? []) as Dividend[]);
@@ -437,6 +448,36 @@ function App() {
     }
     setAssetForm(DEFAULT_ASSET_FORM);
     setMessage("Activo guardado.");
+    await loadDashboardData();
+  }
+
+  async function toggleStrategicEtfTag(assetId: string, enabled: boolean) {
+    if (!session) {
+      setMessage("Entra con tu email antes de cambiar tags.");
+      return;
+    }
+    const tag = "myinvestor_resilient_etf";
+    if (enabled) {
+      const { error } = await supabase.from("asset_tags").upsert(
+        {
+          asset_id: assetId,
+          tag,
+          notes: "ETF de MyInvestor para cartera resistente: largo plazo, inflacion +2%, crecimiento +4/6%.",
+        },
+        { onConflict: "asset_id,tag" }
+      );
+      if (error) {
+        setMessage(friendlySupabaseError(error.message));
+        return;
+      }
+    } else {
+      const { error } = await supabase.from("asset_tags").delete().eq("asset_id", assetId).eq("tag", tag);
+      if (error) {
+        setMessage(friendlySupabaseError(error.message));
+        return;
+      }
+    }
+    setMessage(enabled ? "ETF anadido a cartera resistente." : "ETF quitado de cartera resistente.");
     await loadDashboardData();
   }
 
@@ -890,6 +931,7 @@ function App() {
           assets={filteredAssets}
           allAssets={assets}
           identifiers={identifiers}
+          assetTags={assetTags}
           search={assetSearch}
           setSearch={setAssetSearch}
           form={assetForm}
@@ -902,8 +944,10 @@ function App() {
         <EtfView
           positions={enrichedPositions}
           etfs={legacyAppState?.etfs ?? []}
+          assetTags={assetTags}
           onChange={(nextEtfs) => patchLegacyAppState({ etfs: nextEtfs })}
           onSave={() => saveLegacyAppState()}
+          onToggleStrategicTag={toggleStrategicEtfTag}
           saving={savingState}
         />
       )}
@@ -1454,6 +1498,7 @@ function AssetsView({
   assets,
   allAssets,
   identifiers,
+  assetTags,
   search,
   setSearch,
   form,
@@ -1464,6 +1509,7 @@ function AssetsView({
   assets: Asset[];
   allAssets: Asset[];
   identifiers: Identifier[];
+  assetTags: AssetTag[];
   search: string;
   setSearch: (value: string) => void;
   form: AssetForm;
@@ -1516,12 +1562,16 @@ function AssetsView({
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="filtrar activos" />
         </div>
         <SimpleTable
-          columns={["Activo", "Tipo", "Moneda", "ISIN", "Identificadores"]}
+          columns={["Activo", "Tipo", "Moneda", "ISIN", "Tags", "Identificadores"]}
           rows={assets.map((asset) => [
             asset.name,
             assetTypeLabel(asset.asset_type),
             asset.currency,
             asset.isin ?? "",
+            assetTags
+              .filter((tag) => tag.asset_id === asset.id)
+              .map((tag) => tag.tag)
+              .join(", "),
             identifiers
               .filter((identifier) => identifier.asset_id === asset.id)
               .map((identifier) => `${identifier.provider}:${identifier.symbol}`)
@@ -1537,19 +1587,25 @@ function AssetsView({
 function EtfView({
   positions,
   etfs,
+  assetTags,
   onChange,
   onSave,
+  onToggleStrategicTag,
   saving,
 }: {
   positions: Array<Position & { symbol: string; marketValue: number; costBasis: number; latentGain: number; dailyGain: number }>;
   etfs: Array<Record<string, string | number | null>>;
+  assetTags: AssetTag[];
   onChange: (value: Array<Record<string, string | number | null>>) => void;
   onSave: () => void;
+  onToggleStrategicTag: (assetId: string, enabled: boolean) => void;
   saving: boolean;
 }) {
   const etfPositions = positions.filter((row) => row.asset_type === "etf");
   const total = etfPositions.reduce((acc, row) => acc + row.marketValue, 0);
   const bySymbol = new Map(etfPositions.map((row) => [row.symbol, row]));
+  const strategicAssetIds = new Set(assetTags.filter((row) => row.tag === "myinvestor_resilient_etf").map((row) => row.asset_id));
+  const strategicCount = etfPositions.filter((row) => strategicAssetIds.has(row.asset_id)).length;
   const changeEtf = (index: number, key: string, value: string) => {
     const next = etfs.map((row, rowIndex) =>
       rowIndex === index
@@ -1573,7 +1629,7 @@ function EtfView({
         <div className="summary-grid compact">
           <Metric label="ETF abiertos" value={etfPositions.length} />
           <Metric label="Valor ETF" value={formatMoney(total)} />
-          <Metric label="Universo legacy" value={etfs.length} />
+          <Metric label="ETF cartera resistente" value={strategicCount} />
           <Metric label="Peso mayor ETF" value={formatPercent(total ? Math.max(...etfPositions.map((row) => row.marketValue)) / total : 0)} />
         </div>
         <AllocationPanel title="Peso actual ETF" rows={groupPositions(etfPositions, (row) => row.symbol)} />
@@ -1581,19 +1637,30 @@ function EtfView({
       <section className="panel">
         <h2>Objetivos ETF</h2>
         <EditableTable
-          columns={["Ticker", "Nombre", "ISIN", "Proveedor", "Peso actual", "Peso objetivo %", "Diferencia", "EUR aprox."]}
-          totalColumns={[{ index: 7, format: "money" }]}
+          columns={["Ticker", "Nombre", "ISIN", "Proveedor", "Resistente", "Peso actual", "Peso objetivo %", "Diferencia", "EUR aprox."]}
+          totalColumns={[{ index: 8, format: "money" }]}
           rows={etfs.map((row, index) => {
             const symbol = String(row.symbol ?? row.ticker ?? "");
             const position = bySymbol.get(symbol);
             const actualWeight = total ? Number(position?.marketValue ?? 0) / total : 0;
             const targetWeight = Number(row.targetWeight ?? 0);
             const delta = targetWeight - actualWeight;
+            const isStrategic = position ? strategicAssetIds.has(position.asset_id) : false;
             return [
               <input value={symbol} onChange={(event) => changeEtf(index, "symbol", event.target.value.toUpperCase())} />,
               <input value={String(row.provider_name ?? row.name ?? "")} onChange={(event) => changeEtf(index, "provider_name", event.target.value)} />,
               <input value={String(row.isin ?? "")} onChange={(event) => changeEtf(index, "isin", event.target.value.toUpperCase())} />,
               <input value={String(row.provider ?? "")} onChange={(event) => changeEtf(index, "provider", event.target.value)} />,
+              position ? (
+                <input
+                  aria-label="ETF cartera resistente"
+                  checked={isStrategic}
+                  onChange={(event) => onToggleStrategicTag(position.asset_id, event.target.checked)}
+                  type="checkbox"
+                />
+              ) : (
+                ""
+              ),
               formatPercent(actualWeight),
               <input value={targetWeight ? String(Math.round(targetWeight * 10000) / 100) : ""} onChange={(event) => changeEtf(index, "targetWeight", event.target.value)} inputMode="decimal" />,
               <span className={delta >= 0 ? "good" : "bad"}>{formatPercent(delta)}</span>,
@@ -2228,16 +2295,24 @@ function ImporterView() {
 function ReportsView({ reports }: { reports: ResearchReport[] }) {
   const periodic = reports.filter((report) => report.report_type === "portfolio_periodic");
   const rebalance = reports.filter((report) => report.report_type === "rebalance_opportunity");
+  const groupAnalysis = reports.filter((report) => report.report_type === "portfolio_group_analysis");
+  const etfAnalysis = reports.filter((report) => report.report_type === "etf_resilient_portfolio");
   const latest = reports[0];
   return (
     <>
       <section className="panel">
         <h2>Informes y ponderacion</h2>
         <div className="summary-grid compact">
-          <Metric label="Informes periodicos" value={periodic.length} />
-          <Metric label="Recomendaciones" value={rebalance.length} />
+          <Metric label="Por grupo" value={groupAnalysis.length} />
+          <Metric label="ETF resistente" value={etfAnalysis.length} />
+          <Metric label="Periodicos legacy" value={periodic.length} />
+          <Metric label="Ponderacion" value={rebalance.length} />
+        </div>
+        <div className="summary-grid compact">
           <Metric label="Ultimo modelo" value={latest?.model ?? ""} />
           <Metric label="Ultima fecha" value={latest ? new Date(latest.created_at).toLocaleDateString("es-ES") : ""} />
+          <Metric label="Busquedas" value="Brave" />
+          <Metric label="Razonamiento" value="OpenAI" />
         </div>
         <p className="muted">
           Los informes se generan desde backend/GitHub Actions con Brave Search para contexto web y OpenAI para el analisis. La app solo lee los resultados guardados.
@@ -2254,8 +2329,7 @@ function ReportsView({ reports }: { reports: ResearchReport[] }) {
                 <header>
                   <strong>{report.title}</strong>
                   <span>
-                    {report.report_type === "portfolio_periodic" ? "Informe periodico" : "Ponderacion"} -{" "}
-                    {new Date(report.created_at).toLocaleString("es-ES")}
+                    {reportTypeLabel(report.report_type)} - {new Date(report.created_at).toLocaleString("es-ES")}
                   </span>
                 </header>
                 <pre>{report.content_markdown}</pre>
@@ -2266,6 +2340,16 @@ function ReportsView({ reports }: { reports: ResearchReport[] }) {
       </section>
     </>
   );
+}
+
+function reportTypeLabel(type: ResearchReport["report_type"]) {
+  const labels: Record<ResearchReport["report_type"], string> = {
+    portfolio_periodic: "Informe periodico",
+    rebalance_opportunity: "Ponderacion",
+    portfolio_group_analysis: "Analisis por grupo",
+    etf_resilient_portfolio: "ETF resistente",
+  };
+  return labels[type];
 }
 
 function QueueView({ queue }: { queue: ResolutionQueueItem[] }) {

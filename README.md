@@ -218,7 +218,9 @@ BRAVE_SEARCH_API_KEY
 Opcionalmente crear como `Actions variable`:
 
 ```text
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-5.4-mini
+OPENAI_REPORT_MAX_OUTPUT_TOKENS=3500
+OPENAI_DAILY_TOKEN_BUDGET=750000
 ```
 
 ## Backend Local
@@ -415,12 +417,14 @@ Migracion requerida:
 
 ```text
 supabase/migrations/009_research_reports.sql
+supabase/migrations/011_report_types_and_asset_tags.sql
 ```
 
 Comandos locales:
 
 ```bash
-python scripts/nightly_reports.py --type portfolio_periodic
+python scripts/nightly_reports.py --type portfolio_group_analysis
+python scripts/nightly_reports.py --type etf_resilient_portfolio
 python scripts/nightly_reports.py --type rebalance_opportunity --focus "ponderar nuevas aportaciones"
 ```
 
@@ -429,9 +433,36 @@ Endpoints backend:
 ```text
 POST /api/reports/portfolio
 POST /api/reports/rebalance
+POST /api/reports/groups
+POST /api/reports/etf-resilient
 ```
 
-El workflow `.github/workflows/nightly_reports.yml` genera informes periodicos de lunes a viernes y tambien permite ejecucion manual con tipo `portfolio_periodic` o `rebalance_opportunity`.
+Tipos de informe activos:
+
+| Tipo | Funcion |
+|---|---|
+| `portfolio_group_analysis` | Analisis de cartera actual por Acciones, ETF y Fondos |
+| `etf_resilient_portfolio` | Revision individual y conjunta de la cartera ETF resistente de MyInvestor |
+| `rebalance_opportunity` | Ponderacion ad hoc para nuevas aportaciones |
+| `portfolio_periodic` | Informe periodico legacy |
+
+Reglas de investigacion:
+
+- Las busquedas web se hacen con `BRAVE_SEARCH_API_KEY`.
+- El razonamiento y redaccion se hacen con `OPENAI_API_KEY`.
+- El modelo por defecto queda preparado como `OPENAI_MODEL=gpt-5.4-mini`.
+- El presupuesto diario operativo queda documentado como `OPENAI_DAILY_TOKEN_BUDGET=750000`.
+- La salida de cada informe se limita con `OPENAI_REPORT_MAX_OUTPUT_TOKENS`.
+
+La cartera ETF resistente usa el tag:
+
+```text
+myinvestor_resilient_etf
+```
+
+`supabase/migrations/011_report_types_and_asset_tags.sql` crea `asset_tags` y etiqueta automaticamente los ETF abiertos en MyInvestor. Desde la pestana `ETF` tambien se puede marcar o desmarcar manualmente cada ETF asociado a una posicion abierta.
+
+El workflow `.github/workflows/nightly_reports.yml` genera los domingos los dos informes principales (`portfolio_group_analysis` y `etf_resilient_portfolio`) y tambien permite ejecucion manual de cualquiera de los tipos.
 
 ## GitHub Actions
 
@@ -456,15 +487,15 @@ Hay tres workflows:
 
 `nightly_reports.yml`:
 
-- Corre de lunes a viernes.
-- Hora UTC: `22:30`.
+- Corre los domingos.
+- Hora UTC: `08:30`.
 - Ejecuta `scripts/nightly_reports.py`.
 - Usa Brave para busqueda web y OpenAI para generar el informe.
 
 Cron actual:
 
 ```yaml
-15 22 * * 1-5
+30 8 * * 0
 ```
 
 ## Como Subir Esto A GitHub Desde Tu PC
@@ -631,6 +662,7 @@ Para uso personal, mono-usuario esta bien, pero conviene anadir columna `owner_i
 | `supabase/migrations/008_personal_app_state.sql` | Estado JSON legacy para cash y patrimonio |
 | `supabase/migrations/009_research_reports.sql` | Informes generados por Brave + OpenAI |
 | `supabase/migrations/010_authenticated_edit_movements.sql` | Edicion y borrado autenticados de movimientos y dividendos |
+| `supabase/migrations/011_report_types_and_asset_tags.sql` | Nuevos tipos de informes y tags de activos/ETF |
 | `scripts/load_legacy_app_state.mjs` | Carga cash y patrimonio legacy en Supabase |
 | `scripts/nightly_reports.py` | Generacion periodica de informes |
 | `backend/app/services/asset_resolver.py` | Identidad estable de activos |

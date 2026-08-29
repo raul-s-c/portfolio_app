@@ -6,20 +6,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1] / "backend"
 sys.path.insert(0, str(ROOT))
 
-from app.core.supabase_client import service_client  # noqa: E402
-from app.services.research_reports import ReportRequest, generate_research_report  # noqa: E402
+from app.core.supabase_client import service_client
+from app.services.research_reports import ReportRequest, generate_research_report
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Generate portfolio research reports with Brave + OpenAI.")
     parser.add_argument(
         "--type",
-        choices=["portfolio_periodic", "rebalance_opportunity"],
-        default="portfolio_periodic",
+        choices=[
+            "portfolio_periodic",
+            "rebalance_opportunity",
+            "portfolio_group_analysis",
+            "etf_resilient_portfolio",
+        ],
+        default="portfolio_group_analysis",
     )
     parser.add_argument("--focus", default=None, help="Optional user focus for this report.")
-    parser.add_argument("--max-positions", type=int, default=12)
-    parser.add_argument("--max-web-results", type=int, default=6)
+    parser.add_argument("--max-positions", type=int, default=250)
+    parser.add_argument("--max-web-results", type=int, default=10)
     args = parser.parse_args()
 
     client = service_client()
