@@ -291,7 +291,7 @@ async function extractDividendEvents(position: Dict, search: Dict) {
 
 async function loadContext(maxPositions: number) {
   const positions = await supabaseRest(
-    `v_open_positions?select=*&asset_type=in.(stock,etf)&order=market_value.desc&limit=${maxPositions}`,
+    `v_open_positions?select=*&asset_type=in.(stock,etf)&quantity=gt.0.00000001&order=market_value.desc&limit=${maxPositions}`,
   ) as Dict[];
   const assetIds = positions.map((row) => String(row.asset_id));
   if (!assetIds.length) return [];
@@ -307,10 +307,11 @@ async function loadContext(maxPositions: number) {
     const key = String(row.asset_id);
     identifiersByAsset.set(key, [...(identifiersByAsset.get(key) || []), row]);
   }
-  return positions.map((row) => {
+  const openPositions = positions.map((row) => {
     const asset = assetsById.get(String(row.asset_id)) || {};
     const ids = identifiersByAsset.get(String(row.asset_id)) || [];
-    const primary = ids.find((item) => item.is_primary);
+    const primary = ids.find((item) => item.provider === "yahoo" && item.is_primary)
+      || ids.find((item) => item.is_primary);
     return {
       asset_id: row.asset_id,
       broker_id: row.broker_id,
@@ -324,7 +325,12 @@ async function loadContext(maxPositions: number) {
       price_currency: row.price_currency,
       identifiers: ids,
     };
-  });
+  }).filter((position) => Number(position.quantity) > 0.00000001);
+  const positionsByKey = new Map<string, Dict>();
+  for (const position of openPositions) {
+    positionsByKey.set(`${position.asset_id}:${position.broker_id}`, position);
+  }
+  return [...positionsByKey.values()];
 }
 
 async function collectSearch(position: Dict, focus: string | null, maxWebResults: number) {
@@ -393,32 +399,47 @@ async function refreshDividendCalendar(payload: Dict) {
   const maxWebResults = Number(payload.max_web_results || 8);
   const focus = asString(payload.focus) || null;
   const positions = await loadContext(maxPositions);
-  const rows = [];
+  const positionsByAsset = new Map<string, Dict[]>();
   for (const position of positions) {
-    const search = await collectSearch(position, focus, maxWebResults);
-    const aiEvents = await extractDividendEvents(position, search);
+    const assetId = String(position.asset_id);
+    positionsByAsset.set(assetId, [...(positionsByAsset.get(assetId) || []), position]);
+  }
+  const rowsByKey = new Map<string, Dict>();
+  for (const assetPositions of positionsByAsset.values()) {
+    const representative = assetPositions[0];
+    const search = await collectSearch(representative, focus, maxWebResults);
+    const aiEvents = await extractDividendEvents(representative, search);
     let validEvents = aiEvents.filter((event) =>
       (event.payment_date || event.ex_date) && Number(event.dividend_amount || 0) > 0
     );
     if (!validEvents.length) {
-      const estimated = await estimateEtfDistribution(position);
+      const estimated = await estimateEtfDistribution(representative);
       if (estimated) validEvents = [estimated];
     }
     for (const event of validEvents) {
-      rows.push(calendarRow(position, event, search));
+      for (const position of assetPositions) {
+        const row = calendarRow(position, event, search);
+        const key = [
+          row.asset_id,
+          row.broker_id,
+          row.ex_date || "",
+          row.payment_date || "",
+          row.dividend_amount,
+          row.currency,
+        ].join(":");
+        rowsByKey.set(key, row);
+      }
     }
   }
-  const assetIds = uniqueTerms(positions.map((position) => position.asset_id), 500);
-  if (assetIds.length) {
-    await supabaseRest(`dividend_calendar_events?asset_id=in.(${inList(assetIds)})`, { method: "DELETE" });
-  }
+  const rows = [...rowsByKey.values()];
+  await supabaseRest("dividend_calendar_events?id=not.is.null", { method: "DELETE" });
   if (rows.length) {
     await supabaseRest(
       "dividend_calendar_events?on_conflict=asset_id,broker_id,ex_date,payment_date,dividend_amount,currency",
       { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify(rows) },
     );
   }
-  return { status: "ok", positions: positions.length, events: rows.length };
+  return { status: "ok", assets: positionsByAsset.size, positions: positions.length, events: rows.length };
 }
 
 function reportTitle(reportType: string) {

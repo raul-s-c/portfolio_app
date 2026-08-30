@@ -23,7 +23,7 @@ class CalendarRequest:
 
 
 def dividend_calendar_context(client: Client, max_positions: int = 80) -> dict[str, Any]:
-    positions = (
+    raw_positions = (
         client.table("v_open_positions")
         .select("*")
         .in_("asset_type", ["stock", "etf"])
@@ -32,6 +32,12 @@ def dividend_calendar_context(client: Client, max_positions: int = 80) -> dict[s
         .execute()
         .data
     )
+    positions_by_key = {
+        (row["asset_id"], row["broker_id"]): row
+        for row in raw_positions
+        if float(row.get("quantity") or 0) > 0.00000001
+    }
+    positions = list(positions_by_key.values())
     asset_ids = [row["asset_id"] for row in positions]
     assets = (
         client.table("assets")
@@ -133,12 +139,16 @@ def dividend_calendar_query_variants(position: dict[str, Any], request: Calendar
 
 def dividend_calendar_queries(context: dict[str, Any], request: CalendarRequest) -> list[dict[str, Any]]:
     searches = []
+    seen_assets: set[str] = set()
     for position in context.get("positions", [])[: request.max_positions]:
+        asset_id = position["asset_id"]
+        if asset_id in seen_assets:
+            continue
+        seen_assets.add(asset_id)
         for query in dividend_calendar_query_variants(position, request):
             searches.append(
                 {
-                    "asset_id": position["asset_id"],
-                    "broker_id": position["broker_id"],
+                    "asset_id": asset_id,
                     "query": query,
                 }
             )
@@ -148,15 +158,14 @@ def dividend_calendar_queries(context: dict[str, Any], request: CalendarRequest)
 async def collect_declared_dividend_sources(
     context: dict[str, Any], request: CalendarRequest
 ) -> list[dict[str, Any]]:
-    searches_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    searches_by_key: dict[str, dict[str, Any]] = {}
     for item in dividend_calendar_queries(context, request):
         result = await brave_search(item["query"])
-        key = (item["asset_id"], item["broker_id"])
+        key = item["asset_id"]
         existing = searches_by_key.setdefault(
             key,
             {
                 "asset_id": item["asset_id"],
-                "broker_id": item["broker_id"],
                 "queries": [],
                 "results": [],
             },
@@ -466,14 +475,18 @@ def calendar_row(position: dict[str, Any], event: dict[str, Any], raw_payload: d
 async def refresh_dividend_calendar(client: Client, request: CalendarRequest) -> dict[str, Any]:
     context = dividend_calendar_context(client, request.max_positions)
     searches = await collect_declared_dividend_sources(context, request)
-    searches_by_key = {(row["asset_id"], row["broker_id"]): row for row in searches}
-    rows = []
+    searches_by_asset = {row["asset_id"]: row for row in searches}
+    positions_by_asset: dict[str, list[dict[str, Any]]] = {}
     for position in context["positions"]:
-        search = searches_by_key.get((position["asset_id"], position["broker_id"]))
+        positions_by_asset.setdefault(position["asset_id"], []).append(position)
+    rows_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for asset_id, asset_positions in positions_by_asset.items():
+        representative = asset_positions[0]
+        search = searches_by_asset.get(asset_id)
         if not search:
             continue
-        search = await enrich_search_with_page_excerpts(position, search)
-        events = await extract_dividend_events(position, search)
+        search = await enrich_search_with_page_excerpts(representative, search)
+        events = await extract_dividend_events(representative, search)
         valid_events = [
             event
             for event in events
@@ -481,14 +494,25 @@ async def refresh_dividend_calendar(client: Client, request: CalendarRequest) ->
             and float(event.get("dividend_amount") or 0) > 0
         ]
         if not valid_events:
-            estimated_event = await estimate_etf_distribution_from_history(position)
+            estimated_event = await estimate_etf_distribution_from_history(representative)
             if estimated_event:
                 valid_events = [estimated_event]
         for event in valid_events:
-            rows.append(calendar_row(position, event, {"search": search, "event": event}))
-    asset_ids = list({position["asset_id"] for position in context["positions"]})
-    if asset_ids:
-        client.table("dividend_calendar_events").delete().in_("asset_id", asset_ids).execute()
+            for position in asset_positions:
+                row = calendar_row(position, event, {"search": search, "event": event})
+                key = (
+                    row["asset_id"],
+                    row["broker_id"],
+                    row.get("ex_date"),
+                    row.get("payment_date"),
+                    row["dividend_amount"],
+                    row["currency"],
+                )
+                rows_by_key[key] = row
+    rows = list(rows_by_key.values())
+    client.table("dividend_calendar_events").delete().neq(
+        "id", "00000000-0000-0000-0000-000000000000"
+    ).execute()
     inserted = []
     for row in rows:
         result = (
@@ -500,7 +524,12 @@ async def refresh_dividend_calendar(client: Client, request: CalendarRequest) ->
             .execute()
         )
         inserted.extend(result.data or [])
-    return {"status": "ok", "positions": len(context["positions"]), "events": len(inserted)}
+    return {
+        "status": "ok",
+        "assets": len(positions_by_asset),
+        "positions": len(context["positions"]),
+        "events": len(inserted),
+    }
 
 
 def clean_date(value: Any) -> str | None:

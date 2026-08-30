@@ -125,6 +125,9 @@ type Dividend = {
   gross_amount: number;
   tax: number;
   net_amount: number;
+  withholding_origin: number | null;
+  withholding_destination: number | null;
+  withholding_destination_rate: number | null;
   currency: string;
   source_file: string | null;
   raw_payload: Record<string, unknown>;
@@ -290,6 +293,9 @@ type DividendForm = {
   netAmount: string;
   grossAmount: string;
   tax: string;
+  withholdingOrigin: string;
+  withholdingDestination: string;
+  withholdingRate: string;
   currency: string;
   sourceNote: string;
 };
@@ -297,7 +303,7 @@ type DividendForm = {
 type TotalColumn = number | { index: number; format?: "money" | "number" | "percent" };
 type CashSection = "month" | "objectives" | "annualPlan" | "annualAccounts";
 type DashboardSection = "executive" | "allocation" | "positions" | "etf";
-type DividendSection = "analysis" | "evolution" | "assets" | "edit";
+type DividendSection = "analysis" | "evolution" | "assets" | "tax" | "edit";
 type WealthSection = "period" | "chart" | "history";
 type DividendAggregate = { name: string; gross: number; tax: number; net: number; count: number; weight: number };
 type CalendarAggregate = { name: string; currency: string; expected: number; count: number; averageConfidence: number; weight: number };
@@ -364,6 +370,9 @@ const DEFAULT_DIVIDEND_FORM: DividendForm = {
   netAmount: "",
   grossAmount: "",
   tax: "",
+  withholdingOrigin: "0",
+  withholdingDestination: "",
+  withholdingRate: "19",
   currency: "EUR",
   sourceNote: "",
 };
@@ -497,7 +506,7 @@ function App() {
       loadAllRows<Transaction>("transactions", "trade_date"),
       loadAllRows<Dividend>("dividends", "pay_date"),
       supabase
-        .from("dividend_calendar_events")
+        .from("v_open_dividend_calendar_events")
         .select("*")
         .order("payment_date", { ascending: true, nullsFirst: false })
         .limit(250),
@@ -933,9 +942,12 @@ function App() {
       setMessage("Selecciona activo y broker.");
       return;
     }
-    const net = toNumber(dividendForm.netAmount);
-    const gross = toNumber(dividendForm.grossAmount) || net;
-    const tax = toNumber(dividendForm.tax) || Math.max(0, gross - net);
+    const amounts = dividendAmountsFromForm(dividendForm);
+    const { net, gross, tax, withholdingOrigin, withholdingDestination, withholdingRate } = amounts;
+    if (net <= 0 || withholdingRate < 0 || withholdingRate >= 1) {
+      setMessage("Indica un neto positivo y una retencion entre 0 % y 99,99 %.");
+      return;
+    }
     const sourceRowHash = await digest(
       ["manual-dividend", dividendForm.payDate, dividendForm.assetId, dividendForm.brokerId, net, Date.now()].join("|")
     );
@@ -946,6 +958,9 @@ function App() {
       gross_amount: gross,
       tax,
       net_amount: net,
+      withholding_origin: withholdingOrigin,
+      withholding_destination: withholdingDestination,
+      withholding_destination_rate: withholdingRate,
       currency: dividendForm.currency.trim().toUpperCase() || selectedAsset.currency,
       source_file: "manual-app",
       source_row_hash: sourceRowHash,
@@ -954,6 +969,7 @@ function App() {
         asset: selectedAsset.name,
         broker: selectedBroker.name,
         entered_at: new Date().toISOString(),
+        fiscal_calculation: "net_plus_origin_plus_destination",
       },
     });
     if (error) {
@@ -1029,9 +1045,12 @@ function App() {
       return;
     }
     const currentRow = dividends.find((row) => row.id === id);
-    const net = toNumber(form.netAmount);
-    const gross = toNumber(form.grossAmount) || net;
-    const tax = toNumber(form.tax) || Math.max(0, gross - net);
+    const amounts = dividendAmountsFromForm(form);
+    const { net, gross, tax, withholdingOrigin, withholdingDestination, withholdingRate } = amounts;
+    if (net <= 0 || withholdingRate < 0 || withholdingRate >= 1) {
+      setMessage("Indica un neto positivo y una retencion entre 0 % y 99,99 %.");
+      return;
+    }
     const { error } = await supabase
       .from("dividends")
       .update({
@@ -1041,11 +1060,15 @@ function App() {
         gross_amount: gross,
         tax,
         net_amount: net,
+        withholding_origin: withholdingOrigin,
+        withholding_destination: withholdingDestination,
+        withholding_destination_rate: withholdingRate,
         currency: form.currency.trim().toUpperCase() || selectedAsset.currency,
         raw_payload: {
           ...(currentRow?.raw_payload ?? {}),
           note: form.sourceNote,
           edited_at: new Date().toISOString(),
+          fiscal_calculation: "net_plus_origin_plus_destination",
         },
       })
       .eq("id", id);
@@ -2049,6 +2072,9 @@ function DividendsView({
   const totalNet = filteredDividendRows.reduce((acc, row) => acc + toNumber(row.net_amount ?? 0), 0);
   const totalGross = filteredDividendRows.reduce((acc, row) => acc + toNumber(row.gross_amount ?? 0), 0);
   const totalTax = filteredDividendRows.reduce((acc, row) => acc + toNumber(row.tax ?? 0), 0);
+  const unclassifiedTaxRows = filteredDividendRows.filter(
+    (row) => toNumber(row.tax) > 0 && row.withholding_origin == null && row.withholding_destination == null
+  ).length;
   const monthlyRows = dividendMonthlyRows(filteredDividendRows);
   const yearlyRows = aggregateDividends(filteredDividendRows, (row) => {
     const date = parseDate(row.pay_date);
@@ -2058,6 +2084,28 @@ function DividendsView({
   const byBroker = aggregateDividends(filteredDividendRows, (row) => row.broker?.name ?? "Sin broker");
   const byCurrency = aggregateDividends(filteredDividendRows, (row) => normalizeCurrency(row.currency || "EUR"));
   const annualPivot = dividendAnnualPivot(filteredDividendRows);
+  const fiscalYearRows = dividendFiscalYearRows(filteredDividendRows);
+  const exportFiscalCsv = () => {
+    const header = ["Fecha", "Ticker", "Activo", "Broker", "Bruto", "Retencion origen", "Retencion destino", "Retencion total", "Neto", "Moneda", "Clasificacion"];
+    const lines = filteredDividendRows.map((row) => [
+      row.pay_date,
+      primarySymbols.get(row.asset_id) ?? "",
+      row.asset?.name ?? "",
+      row.broker?.name ?? "",
+      row.gross_amount,
+      row.withholding_origin ?? "",
+      row.withholding_destination ?? "",
+      row.tax,
+      row.net_amount,
+      row.currency,
+      row.withholding_origin == null && row.withholding_destination == null ? "sin_desglose" : "desglosado",
+    ]);
+    downloadTextFile(
+      `dividendos-fiscal-${globalFilters.year || "todos"}.csv`,
+      `\uFEFF${[header, ...lines].map((line) => line.map(csvCell).join(";")).join("\n")}`,
+      "text/csv;charset=utf-8"
+    );
+  };
   return (
     <>
       <form className="panel form-panel" onSubmit={onSubmit}>
@@ -2093,15 +2141,45 @@ function DividendsView({
           </label>
           <label>
             Neto
-            <input value={form.netAmount} onChange={(event) => setForm({ ...form, netAmount: event.target.value })} inputMode="decimal" />
+            <input
+              value={form.netAmount}
+              onChange={(event) => setForm(dividendFormWithCalculatedTax(form, { netAmount: event.target.value }))}
+              inputMode="decimal"
+            />
           </label>
           <label>
-            Bruto
-            <input value={form.grossAmount} onChange={(event) => setForm({ ...form, grossAmount: event.target.value })} inputMode="decimal" />
+            Retencion destino %
+            <input
+              value={form.withholdingRate}
+              onChange={(event) => setForm(dividendFormWithCalculatedTax(form, { withholdingRate: event.target.value }))}
+              inputMode="decimal"
+            />
           </label>
           <label>
-            Tax
-            <input value={form.tax} onChange={(event) => setForm({ ...form, tax: event.target.value })} inputMode="decimal" />
+            Retencion origen
+            <input
+              value={form.withholdingOrigin}
+              onChange={(event) => setForm(dividendFormWithCalculatedTax(form, { withholdingOrigin: event.target.value }))}
+              inputMode="decimal"
+            />
+          </label>
+        </div>
+        <div className="form-row">
+          <label>
+            Bruto calculado
+            <input value={form.grossAmount} readOnly inputMode="decimal" />
+          </label>
+          <label>
+            Retencion destino
+            <input
+              value={form.withholdingDestination}
+              onChange={(event) => setForm(dividendFormWithManualDestination(form, event.target.value))}
+              inputMode="decimal"
+            />
+          </label>
+          <label>
+            Impuestos totales
+            <input value={form.tax} readOnly inputMode="decimal" />
           </label>
         </div>
         <div className="form-row">
@@ -2174,6 +2252,7 @@ function DividendsView({
           { id: "analysis", label: "Analisis" },
           { id: "evolution", label: "Evolucion" },
           { id: "assets", label: "Por activo" },
+          { id: "tax", label: "Fiscalidad" },
           { id: "edit", label: "Edicion" },
         ]}
         active={section}
@@ -2222,6 +2301,38 @@ function DividendsView({
       {section === "assets" && (
       <DividendSummaryTable title="Dividendos por activo" rows={byAsset} onPick={(value) => setGlobalFilters((current) => ({ ...current, asset: value }))} />
       )}
+      {section === "tax" && (
+      <>
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Resumen fiscal de dividendos</h2>
+            <button type="button" onClick={exportFiscalCsv}>Exportar CSV fiscal</button>
+          </div>
+          <div className="summary-grid compact">
+            <Metric label="Bruto" value={dividendCurrencyTotalsLabel(filteredDividendRows, (row) => row.gross_amount)} />
+            <Metric label="Retencion origen" value={dividendCurrencyTotalsLabel(filteredDividendRows, (row) => row.withholding_origin)} />
+            <Metric label="Retencion destino" value={dividendCurrencyTotalsLabel(filteredDividendRows, (row) => row.withholding_destination)} />
+            <Metric label="Sin desglose" value={unclassifiedTaxRows} />
+          </div>
+        </section>
+        <section className="panel">
+          <SimpleTable
+            columns={["Ano", "Moneda", "Bruto", "Ret. origen", "Ret. destino", "Sin desglose", "Ret. total", "Neto", "Cobros"]}
+            rows={fiscalYearRows.map((row) => [
+              row.year,
+              row.currency,
+              formatPlainMoney(row.gross, row.currency),
+              formatPlainMoney(row.origin, row.currency),
+              formatPlainMoney(row.destination, row.currency),
+              formatPlainMoney(row.unclassified, row.currency),
+              formatPlainMoney(row.tax, row.currency),
+              formatPlainMoney(row.net, row.currency),
+              row.count,
+            ])}
+          />
+        </section>
+      </>
+      )}
       {section === "edit" && (
       <section className="panel">
         <div className="panel-header">
@@ -2229,8 +2340,8 @@ function DividendsView({
           <span className="muted-inline">{filteredDividendRows.length} filas visibles</span>
         </div>
         <EditableTable
-          columns={["Fecha", "Ticker", "Bruto", "Tax", "Neto", "Moneda", "Broker", "Nota", ""]}
-          totalColumns={[{ index: 2, format: "money" }, { index: 3, format: "money" }, { index: 4, format: "money" }]}
+          columns={["Fecha", "Ticker", "Neto", "Ret. origen", "Ret. destino %", "Ret. destino", "Bruto", "Impuestos", "Moneda", "Broker", "Nota", ""]}
+          totalColumns={[{ index: 2, format: "money" }, { index: 3, format: "money" }, { index: 5, format: "money" }, { index: 6, format: "money" }, { index: 7, format: "money" }]}
           rows={filteredDividendRows.map((row) => {
             const draft = drafts[row.id] ?? dividendFormFromRow(row);
             const setDraft = (patch: Partial<DividendForm>) => setDrafts((current) => ({ ...current, [row.id]: { ...draft, ...patch } }));
@@ -2243,9 +2354,12 @@ function DividendsView({
                   </option>
                 ))}
               </select>,
-              <input value={draft.grossAmount} onChange={(event) => setDraft({ grossAmount: event.target.value })} inputMode="decimal" />,
-              <input value={draft.tax} onChange={(event) => setDraft({ tax: event.target.value })} inputMode="decimal" />,
-              <input value={draft.netAmount} onChange={(event) => setDraft({ netAmount: event.target.value })} inputMode="decimal" />,
+              <input value={draft.netAmount} onChange={(event) => setDraft(dividendFormWithCalculatedTax(draft, { netAmount: event.target.value }))} inputMode="decimal" />,
+              <input value={draft.withholdingOrigin} onChange={(event) => setDraft(dividendFormWithCalculatedTax(draft, { withholdingOrigin: event.target.value }))} inputMode="decimal" />,
+              <input value={draft.withholdingRate} onChange={(event) => setDraft(dividendFormWithCalculatedTax(draft, { withholdingRate: event.target.value }))} inputMode="decimal" />,
+              <input value={draft.withholdingDestination} onChange={(event) => setDraft(dividendFormWithManualDestination(draft, event.target.value))} inputMode="decimal" />,
+              <input value={draft.grossAmount} readOnly inputMode="decimal" />,
+              <input value={draft.tax} readOnly inputMode="decimal" />,
               <input value={draft.currency} onChange={(event) => setDraft({ currency: event.target.value.toUpperCase() })} />,
               <select value={draft.brokerId} onChange={(event) => setDraft({ brokerId: event.target.value })}>
                 {brokers.map((broker) => (
@@ -2311,9 +2425,9 @@ function DividendCalendarView({
     .reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
   const averageConfidence =
     upcoming.length > 0 ? upcoming.reduce((acc, event) => acc + toNumber(event.confidence), 0) / upcoming.length : 0;
-  const byAsset = aggregateCalendarEvents(
+  const byPosition = aggregateCalendarEvents(
     filteredEvents,
-    (event) => `${event.symbol ?? ""} ${event.asset_name ?? ""}`.trim() || "Sin activo"
+    (event) => `${event.symbol ?? event.asset_name ?? "Sin activo"} · ${event.broker ?? "Sin broker"}`
   );
   const byMonth = aggregateCalendarEvents(filteredEvents, (event) => monthKey(event.payment_date ?? event.ex_date));
   const currencies = [...new Set(upcoming.map((event) => normalizeCurrency(event.currency)))].sort();
@@ -2325,9 +2439,11 @@ function DividendCalendarView({
     eventsByDate.set(date, [...(eventsByDate.get(date) ?? []), event]);
   }
   const selectedEvents = eventsByDate.get(selectedDate) ?? [];
-  const monthTotal = filteredEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
-  const selectedTotal = selectedEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
-  const monthlyForecast = calendarMonthlySeries(upcoming.filter((event) => !calendarBroker || (event.broker ?? "Sin broker") === calendarBroker));
+  const monthTotal = calendarCurrencyTotalsLabel(filteredEvents);
+  const selectedTotal = calendarCurrencyTotalsLabel(selectedEvents);
+  const monthlyForecast = calendarMonthlySeries(upcoming.filter(
+    (event) => normalizeCurrency(event.currency) === "EUR" && (!calendarBroker || (event.broker ?? "Sin broker") === calendarBroker)
+  ));
   return (
     <section className="income-workbench">
       <div className="income-kpis">
@@ -2377,8 +2493,8 @@ function DividendCalendarView({
             </select>
           </label>
           <div className="rail-metrics">
-            <Metric label="Mes visible" value={formatPlainMoney(monthTotal, currencyFilter || "EUR")} />
-            <Metric label="Dia elegido" value={formatPlainMoney(selectedTotal, currencyFilter || "EUR")} />
+            <Metric label="Mes visible" value={monthTotal} />
+            <Metric label="Dia elegido" value={selectedTotal} />
           </div>
           <button className="ghost" onClick={() => {
             setCalendarBroker("");
@@ -2428,12 +2544,12 @@ function DividendCalendarView({
                     onClick={() => setSelectedDate(day.date)}
                   >
                     <span className="day-number">{day.label}</span>
-                    <strong>{dayEvents.length ? formatPlainMoney(dayEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0), dayEvents[0].currency) : ""}</strong>
+                    <strong>{dayEvents.length ? calendarCurrencyTotalsLabel(dayEvents) : ""}</strong>
                     <div className="calendar-chips">
                       {dayEvents.slice(0, 3).map((event) => (
                         <span className={`calendar-chip ${event.asset_type} ${toNumber(event.confidence) >= 0.7 ? "high" : "medium"}`} key={event.id}>
                           <b>{event.symbol ?? event.asset_name}</b>
-                          <em>{formatPlainMoney(event.expected_gross_amount, event.currency)}</em>
+                          <em>{event.broker}: {formatPlainMoney(event.expected_gross_amount, event.currency)}</em>
                         </span>
                       ))}
                       {dayEvents.length > 3 && <span className="calendar-chip more">+{dayEvents.length - 3}</span>}
@@ -2459,7 +2575,7 @@ function DividendCalendarView({
             </button>
           </div>
           <dl className="day-stats">
-            <div><dt>Expected Income</dt><dd>{formatPlainMoney(selectedTotal, selectedEvents[0]?.currency ?? "EUR")}</dd></div>
+            <div><dt>Expected Income</dt><dd>{selectedTotal}</dd></div>
             <div><dt>Payments</dt><dd>{selectedEvents.length}</dd></div>
             <div><dt>Avg. Confidence</dt><dd>{formatPercent(selectedEvents.length ? selectedEvents.reduce((acc, event) => acc + toNumber(event.confidence), 0) / selectedEvents.length : 0)}</dd></div>
           </dl>
@@ -2474,9 +2590,12 @@ function DividendCalendarView({
                 </header>
                 <p>{event.asset_name}</p>
                 <dl>
+                  <div><dt>Broker</dt><dd>{event.broker ?? "-"}</dd></div>
+                  <div><dt>Cantidad</dt><dd>{formatNumber(event.quantity)}</dd></div>
+                  <div><dt>Dividendo / participacion</dt><dd>{formatPlainMoney(event.dividend_amount, event.currency)}</dd></div>
                   <div><dt>Ex-Dividend</dt><dd>{event.ex_date ?? "-"}</dd></div>
                   <div><dt>Payment Date</dt><dd>{event.payment_date ?? "-"}</dd></div>
-                  <div><dt>Expected Amount</dt><dd>{formatPlainMoney(event.expected_gross_amount, event.currency)}</dd></div>
+                  <div><dt>Total posicion</dt><dd>{formatPlainMoney(event.expected_gross_amount, event.currency)}</dd></div>
                   <div><dt>Confidence</dt><dd>{formatPercent(event.confidence)}</dd></div>
                 </dl>
                 {event.source_url && (
@@ -2493,12 +2612,14 @@ function DividendCalendarView({
         <section className="panel">
           <h2>Upcoming Payments</h2>
           <SimpleTable
-            columns={["Date", "Ticker", "Name", "Amount", "Ccy", "Ex-Dividend", "Confidence", "Source"]}
-            totalColumns={[{ index: 3, format: "money" }]}
+            columns={["Date", "Ticker", "Broker", "Cantidad", "Por participacion", "Total posicion", "Ccy", "Ex-Dividend", "Confidence", "Source"]}
+            totalColumns={currencyFilter ? [{ index: 5, format: "money" }] : []}
             rows={filteredEvents.slice(0, 18).map((event) => [
               event.payment_date ?? "",
               event.symbol ?? "",
-              event.asset_name ?? "",
+              event.broker ?? "",
+              formatNumber(event.quantity),
+              formatPlainMoney(event.dividend_amount, event.currency),
               formatPlainMoney(event.expected_gross_amount, event.currency),
               event.currency,
               event.ex_date ?? "",
@@ -2520,7 +2641,7 @@ function DividendCalendarView({
       </section>
       <section className="two-grid">
         <CalendarSummaryTable title="Por mes previsto" rows={byMonth} />
-        <CalendarSummaryTable title="Por activo previsto" rows={byAsset} />
+        <CalendarSummaryTable title="Por posicion prevista" rows={byPosition} />
       </section>
     </section>
   );
@@ -4383,6 +4504,58 @@ function dividendAnnualPivot(rows: Array<Dividend & { asset?: Asset; broker?: Br
     .map(([year, months]) => ({ year, months, total: months.reduce((acc, value) => acc + value, 0) }));
 }
 
+function dividendFiscalYearRows(rows: Array<Dividend & { asset?: Asset; broker?: Broker }>) {
+  const grouped = new Map<string, { year: string; currency: string; gross: number; origin: number; destination: number; unclassified: number; tax: number; net: number; count: number }>();
+  for (const row of rows) {
+    const date = parseDate(row.pay_date);
+    const year = date ? String(date.getFullYear()) : "Sin fecha";
+    const currency = normalizeCurrency(row.currency || "EUR");
+    const key = `${year}||${currency}`;
+    const current = grouped.get(key) ?? { year, currency, gross: 0, origin: 0, destination: 0, unclassified: 0, tax: 0, net: 0, count: 0 };
+    const isUnclassified = row.withholding_origin == null && row.withholding_destination == null;
+    current.gross += toNumber(row.gross_amount);
+    current.origin += toNumber(row.withholding_origin ?? 0);
+    current.destination += toNumber(row.withholding_destination ?? 0);
+    current.unclassified += isUnclassified ? toNumber(row.tax) : 0;
+    current.tax += toNumber(row.tax);
+    current.net += toNumber(row.net_amount);
+    current.count += 1;
+    grouped.set(key, current);
+  }
+  return [...grouped.values()].sort((a, b) => b.year.localeCompare(a.year) || a.currency.localeCompare(b.currency));
+}
+
+function dividendCurrencyTotalsLabel(
+  rows: Array<Dividend & { asset?: Asset; broker?: Broker }>,
+  valueFn: (row: Dividend) => number | null | undefined
+) {
+  const totals = new Map<string, number>();
+  for (const row of rows) {
+    const currency = normalizeCurrency(row.currency || "EUR");
+    totals.set(currency, (totals.get(currency) ?? 0) + toNumber(valueFn(row) ?? 0));
+  }
+  if (!totals.size) return formatPlainMoney(0, "EUR");
+  return [...totals.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([currency, value]) => formatPlainMoney(value, currency))
+    .join(" · ");
+}
+
+function csvCell(value: unknown) {
+  const text = String(value ?? "").replace(/"/g, '""');
+  return `"${text}"`;
+}
+
+function downloadTextFile(filename: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 function parseDate(value: string | null | undefined) {
   const date = new Date(String(value ?? ""));
   return Number.isNaN(date.getTime()) ? null : date;
@@ -4434,6 +4607,19 @@ function aggregateCalendarEvents(events: DividendCalendarEvent[], keyFn: (event:
     });
 }
 
+function calendarCurrencyTotalsLabel(events: DividendCalendarEvent[]) {
+  if (!events.length) return formatPlainMoney(0, "EUR");
+  const totals = new Map<string, number>();
+  for (const event of events) {
+    const currency = normalizeCurrency(event.currency);
+    totals.set(currency, (totals.get(currency) ?? 0) + toNumber(event.expected_gross_amount));
+  }
+  return [...totals.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([currency, value]) => formatPlainMoney(value, currency))
+    .join(" · ");
+}
+
 function transactionFormFromRow(row: Transaction): TransactionForm {
   return {
     assetId: row.asset_id,
@@ -4449,7 +4635,67 @@ function transactionFormFromRow(row: Transaction): TransactionForm {
   };
 }
 
+function roundMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function dividendAmountsFromForm(form: DividendForm) {
+  const net = Math.max(0, toNumber(form.netAmount));
+  const withholdingOrigin = Math.max(0, toNumber(form.withholdingOrigin));
+  const withholdingRate = Math.max(0, Math.min(0.9999, toNumber(form.withholdingRate) / 100));
+  const derivedGross = withholdingRate < 1 ? (net + withholdingOrigin) / (1 - withholdingRate) : 0;
+  const derivedDestination = Math.max(0, derivedGross - net - withholdingOrigin);
+  const withholdingDestination = String(form.withholdingDestination).trim()
+    ? Math.max(0, toNumber(form.withholdingDestination))
+    : derivedDestination;
+  const gross = roundMoney(net + withholdingOrigin + withholdingDestination);
+  const tax = roundMoney(withholdingOrigin + withholdingDestination);
+  return {
+    net: roundMoney(net),
+    gross,
+    tax,
+    withholdingOrigin: roundMoney(withholdingOrigin),
+    withholdingDestination: roundMoney(withholdingDestination),
+    withholdingRate,
+  };
+}
+
+function dividendFormWithCalculatedTax(form: DividendForm, patch: Partial<DividendForm>): DividendForm {
+  const next = { ...form, ...patch };
+  if (!String(next.netAmount).trim()) {
+    return { ...next, grossAmount: "", tax: "", withholdingDestination: "" };
+  }
+  const origin = Math.max(0, toNumber(next.withholdingOrigin));
+  const rate = Math.max(0, Math.min(99.99, toNumber(next.withholdingRate))) / 100;
+  const net = Math.max(0, toNumber(next.netAmount));
+  const gross = rate < 1 ? (net + origin) / (1 - rate) : 0;
+  const destination = Math.max(0, gross - net - origin);
+  return {
+    ...next,
+    grossAmount: formatInputNumber(roundMoney(gross)),
+    tax: formatInputNumber(roundMoney(origin + destination)),
+    withholdingDestination: formatInputNumber(roundMoney(destination)),
+  };
+}
+
+function dividendFormWithManualDestination(form: DividendForm, value: string): DividendForm {
+  const net = Math.max(0, toNumber(form.netAmount));
+  const origin = Math.max(0, toNumber(form.withholdingOrigin));
+  const destination = Math.max(0, toNumber(value));
+  const gross = net + origin + destination;
+  return {
+    ...form,
+    withholdingDestination: value,
+    withholdingRate: formatInputNumber(gross > 0 ? (destination / gross) * 100 : 0),
+    grossAmount: formatInputNumber(roundMoney(gross)),
+    tax: formatInputNumber(roundMoney(origin + destination)),
+  };
+}
+
 function dividendFormFromRow(row: Dividend): DividendForm {
+  const origin = row.withholding_origin ?? 0;
+  const destination = row.withholding_destination ?? row.tax ?? 0;
+  const rate = row.withholding_destination_rate ?? (row.gross_amount ? destination / row.gross_amount : 0.19);
   return {
     assetId: row.asset_id,
     brokerId: row.broker_id,
@@ -4457,6 +4703,9 @@ function dividendFormFromRow(row: Dividend): DividendForm {
     netAmount: formatInputNumber(row.net_amount),
     grossAmount: formatInputNumber(row.gross_amount),
     tax: formatInputNumber(row.tax),
+    withholdingOrigin: formatInputNumber(origin),
+    withholdingDestination: formatInputNumber(destination),
+    withholdingRate: formatInputNumber(rate * 100),
     currency: row.currency,
     sourceNote: noteFromRaw(row.raw_payload),
   };

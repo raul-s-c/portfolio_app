@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from app.services.dividend_calendar import (
     calculate_expected_amount,
     clean_date,
+    dividend_calendar_queries,
     dividend_calendar_query_variants,
     infer_next_distribution_from_history,
     normalize_currency,
@@ -77,6 +78,31 @@ def test_position_search_terms_deduplicates_identifiers():
     )
 
     assert terms["symbols"] == ["IQQJ", "IJPN.L"]
+
+
+def test_calendar_searches_once_per_asset_across_brokers():
+    position = {
+        "asset_id": "asset-1",
+        "asset_type": "etf",
+        "symbol": "JGPI",
+        "name": "JPMorgan Global Equity Premium Income",
+        "isin": "IE0003UVYC20",
+        "identifiers": [],
+    }
+    context = {
+        "positions": [
+            {**position, "broker_id": "broker-1", "quantity": 10},
+            {**position, "broker_id": "broker-2", "quantity": 20},
+        ]
+    }
+    request = type("Request", (), {"focus": None, "max_positions": 80})()
+
+    queries = dividend_calendar_queries(context, request)
+
+    assert queries
+    assert {query["asset_id"] for query in queries} == {"asset-1"}
+    assert all("broker_id" not in query for query in queries)
+    assert len(queries) == len(dividend_calendar_query_variants(position, request))
 
 
 def test_infer_next_distribution_from_history_marks_estimate():

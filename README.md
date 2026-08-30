@@ -777,6 +777,7 @@ Para uso personal, mono-usuario esta bien, pero conviene anadir columna `owner_i
 | `supabase/migrations/021_fix_eur_etf_listings.sql` | Lineas EUR verificadas para CNYB y XCHA |
 | `supabase/migrations/022_fix_wqdv_eur_listing.sql` | Linea Xetra EUR y movimientos normalizados para WQDV/QDVW |
 | `supabase/migrations/023_fix_ijpn_eur_listing.sql` | Corrige IJPN al ticker Xetra EUR IQQJ.DE mediante ISIN |
+| `supabase/migrations/024_dividend_positions_and_tax.sql` | Calendario por posicion abierta y desglose fiscal de dividendos |
 | `scripts/load_legacy_app_state.mjs` | Carga cash y patrimonio legacy en Supabase |
 | `scripts/nightly_reports.py` | Generacion periodica de informes |
 | `backend/app/services/asset_resolver.py` | Identidad estable de activos |
