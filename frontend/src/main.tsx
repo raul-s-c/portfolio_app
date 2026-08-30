@@ -66,6 +66,19 @@ type Position = {
   daily_gain: number | null;
   price_currency: string | null;
   priced_at: string | null;
+  total_purchases?: number | null;
+  total_sale_proceeds?: number | null;
+  realized_gain?: number | null;
+};
+
+type PortfolioReconciliation = {
+  total_purchases_eur: number;
+  total_sale_proceeds_eur: number;
+  realized_gain_eur: number;
+  open_cost_basis_eur: number;
+  reconciliation_difference_eur: number;
+  open_positions: number;
+  asset_broker_ledgers: number;
 };
 
 type Transaction = {
@@ -329,6 +342,7 @@ function App() {
   const [password, setPassword] = useState("");
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [positions, setPositions] = useState<Position[]>([]);
+  const [portfolioReconciliation, setPortfolioReconciliation] = useState<PortfolioReconciliation | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [identifiers, setIdentifiers] = useState<Identifier[]>([]);
   const [assetTags, setAssetTags] = useState<AssetTag[]>([]);
@@ -396,6 +410,7 @@ function App() {
 
   function clearData() {
     setPositions([]);
+    setPortfolioReconciliation(null);
     setAssets([]);
     setIdentifiers([]);
     setAssetTags([]);
@@ -418,6 +433,7 @@ function App() {
     setLoading(true);
     const [
       positionsResult,
+      reconciliationResult,
       assetsResult,
       identifiersResult,
       assetTagsResult,
@@ -435,12 +451,13 @@ function App() {
       virtualAssignmentsResult,
     ] = await Promise.all([
       supabase.from("v_open_positions").select("*").order("name"),
+      supabase.from("v_portfolio_reconciliation").select("*").maybeSingle(),
       supabase.from("assets").select("id,asset_type,name,isin,currency").order("name"),
       supabase.from("asset_identifiers").select("asset_id,provider,symbol,exchange,is_primary").order("symbol"),
       supabase.from("asset_tags").select("asset_id,tag,notes").order("tag"),
       supabase.from("brokers").select("id,name").order("name"),
-      supabase.from("transactions").select("*").order("trade_date", { ascending: false }).limit(500),
-      supabase.from("dividends").select("*").order("pay_date", { ascending: false }).limit(500),
+      loadAllRows<Transaction>("transactions", "trade_date"),
+      loadAllRows<Dividend>("dividends", "pay_date"),
       supabase
         .from("dividend_calendar_events")
         .select("*")
@@ -472,6 +489,7 @@ function App() {
 
     const coreError =
       positionsResult.error ||
+      reconciliationResult.error ||
       assetsResult.error ||
       identifiersResult.error ||
       brokersResult.error ||
@@ -485,6 +503,7 @@ function App() {
       setMessage(friendlySupabaseError(coreError.message));
     } else {
       setPositions((positionsResult.data ?? []) as Position[]);
+      setPortfolioReconciliation((reconciliationResult.data ?? null) as PortfolioReconciliation | null);
       setAssets((assetsResult.data ?? []) as Asset[]);
       setIdentifiers((identifiersResult.data ?? []) as Identifier[]);
       setAssetTags(assetTagsResult.error ? [] : ((assetTagsResult.data ?? []) as AssetTag[]));
@@ -809,7 +828,7 @@ function App() {
       trade_date: transactionForm.tradeDate,
       type: transactionForm.type,
       quantity: signedQuantity,
-      gross_amount: toNumber(transactionForm.grossAmount),
+      gross_amount: signedNumber(transactionForm.grossAmount, transactionForm.type),
       fees: toNumber(transactionForm.fees),
       tax: toNumber(transactionForm.tax),
       currency: transactionForm.currency.trim().toUpperCase() || selectedAsset.currency,
@@ -895,7 +914,7 @@ function App() {
         trade_date: form.tradeDate,
         type: form.type,
         quantity: signedQuantity,
-        gross_amount: toNumber(form.grossAmount),
+        gross_amount: signedNumber(form.grossAmount, form.type),
         fees: toNumber(form.fees),
         tax: toNumber(form.tax),
         currency: form.currency.trim().toUpperCase() || selectedAsset.currency,
@@ -1204,6 +1223,8 @@ function App() {
       {activeTab === "transactions" && (
         <TransactionsView
           rows={transactionRows}
+          reconciliation={portfolioReconciliation}
+          portfolioCostBasis={totals.costBasis}
           assets={assets}
           brokers={brokers}
           primarySymbols={primarySymbols}
@@ -1583,6 +1604,8 @@ function PositionsView({
 
 function TransactionsView({
   rows,
+  reconciliation,
+  portfolioCostBasis,
   assets,
   brokers,
   primarySymbols,
@@ -1596,6 +1619,8 @@ function TransactionsView({
   loading,
 }: {
   rows: Array<Transaction & { asset?: Asset; broker?: Broker }>;
+  reconciliation: PortfolioReconciliation | null;
+  portfolioCostBasis: number;
   assets: Asset[];
   brokers: Broker[];
   primarySymbols: Map<string, string>;
@@ -1612,7 +1637,15 @@ function TransactionsView({
   useEffect(() => {
     setDrafts(Object.fromEntries(rows.map((row) => [row.id, transactionFormFromRow(row)])));
   }, [rows]);
-  const visibleTotal = rows.reduce((acc, row) => acc + Number(row.gross_amount ?? 0), 0);
+  const visibleNetInvestment = rows.reduce((acc, row) => {
+    const amount = Math.abs(Number(row.gross_amount ?? 0));
+    const fees = Math.abs(Number(row.fees ?? 0));
+    const tax = Math.abs(Number(row.tax ?? 0));
+    return row.type === "buy" || row.type === "transfer_in"
+      ? acc + amount + fees + tax
+      : acc - Math.max(0, amount - fees - tax);
+  }, 0);
+  const portfolioDifference = reconciliation ? portfolioCostBasis - Number(reconciliation.open_cost_basis_eur ?? 0) : 0;
   return (
     <>
       <TransactionFormPanel assets={assets} brokers={brokers} primarySymbols={primarySymbols} form={form} setForm={setForm} onSubmit={onSubmit} loading={loading} />
@@ -1622,13 +1655,39 @@ function TransactionsView({
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="filtrar movimientos" />
         </div>
         <div className="summary-grid compact">
-          <Metric label="Importe visible" value={formatMoney(visibleTotal)} />
+          <Metric label="Flujo neto visible" value={formatMoney(visibleNetInvestment)} />
           <Metric label="Filas visibles" value={rows.length} />
           <Metric label="Compras" value={rows.filter((row) => row.type === "buy").length} />
           <Metric label="Ventas" value={rows.filter((row) => row.type === "sell").length} />
         </div>
+        {reconciliation && (
+          <section className="reconciliation-panel" aria-label="Conciliacion de movimientos y cartera">
+            <div className="panel-header">
+              <div>
+                <span className="kicker">Conciliacion contable</span>
+                <h3>Activity explica exactamente el coste abierto de Portfolio</h3>
+              </div>
+              <span className={Math.abs(portfolioDifference) < 0.01 ? "status-pill good" : "status-pill bad"}>
+                {Math.abs(portfolioDifference) < 0.01 ? "Conciliado" : "Revisar diferencia"}
+              </span>
+            </div>
+            <div className="reconciliation-equation">
+              <Metric label="Compras acumuladas" value={formatMoney(reconciliation.total_purchases_eur)} />
+              <span aria-hidden="true">-</span>
+              <Metric label="Ventas acumuladas" value={formatMoney(reconciliation.total_sale_proceeds_eur)} />
+              <span aria-hidden="true">+</span>
+              <Metric label="P&G realizado" value={formatMoney(reconciliation.realized_gain_eur)} tone={Number(reconciliation.realized_gain_eur) >= 0 ? "good" : "bad"} />
+              <span aria-hidden="true">=</span>
+              <Metric label="Coste abierto" value={formatMoney(reconciliation.open_cost_basis_eur)} />
+            </div>
+            <p className="reconciliation-note">
+              Diferencia contra Portfolio: <strong className={Math.abs(portfolioDifference) < 0.01 ? "good" : "bad"}>{formatMoney(portfolioDifference)}</strong>.
+              El coste abierto usa coste medio ponderado y descarga coste cuando hay ventas.
+            </p>
+          </section>
+        )}
         <EditableTable
-          columns={["Fecha", "Ticker", "Tipo", "Cantidad", "Importe", "Fees", "Tax", "Moneda", "Broker", "Nota", ""]}
+          columns={["Fecha", "Ticker", "Tipo", "Cantidad", "Importe EUR", "Fees EUR", "Tax EUR", "Moneda activo", "Broker", "Nota", ""]}
           totalColumns={[{ index: 3, format: "number" }, { index: 4, format: "money" }, { index: 5, format: "money" }, { index: 6, format: "money" }]}
           rows={rows.map((row) => {
             const draft = drafts[row.id] ?? transactionFormFromRow(row);
@@ -1740,21 +1799,21 @@ function TransactionFormPanel({
           <input value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} inputMode="decimal" />
         </label>
         <label>
-          Importe
+          Importe total EUR
           <input value={form.grossAmount} onChange={(event) => setForm({ ...form, grossAmount: event.target.value })} inputMode="decimal" />
         </label>
       </div>
       <div className="form-row">
         <label>
-          Comisiones
+          Comisiones EUR
           <input value={form.fees} onChange={(event) => setForm({ ...form, fees: event.target.value })} inputMode="decimal" />
         </label>
         <label>
-          Impuestos
+          Impuestos EUR
           <input value={form.tax} onChange={(event) => setForm({ ...form, tax: event.target.value })} inputMode="decimal" />
         </label>
         <label>
-          Moneda
+          Moneda del activo
           <input value={form.currency} onChange={(event) => setForm({ ...form, currency: event.target.value })} />
         </label>
         <label>
@@ -3671,8 +3730,8 @@ function SimpleTable({
     () =>
       rows.filter((row) =>
         columns.every((_, index) => {
-          const query = (filters[index] ?? "").trim().toLowerCase();
-          return !query || cellText(row[index]).toLowerCase().includes(query);
+          const query = normalizeSearchText(filters[index] ?? "");
+          return !query || normalizeSearchText(cellText(row[index])).includes(query);
         })
       ),
     [rows, columns, filters]
@@ -3745,8 +3804,8 @@ function EditableTable({
     () =>
       rows.filter((row) =>
         columns.every((_, index) => {
-          const query = (filters[index] ?? "").trim().toLowerCase();
-          return !query || cellText(row[index]).toLowerCase().includes(query);
+          const query = normalizeSearchText(filters[index] ?? "");
+          return !query || normalizeSearchText(cellText(row[index])).includes(query);
         })
       ),
     [rows, columns, filters]
@@ -4008,6 +4067,23 @@ async function readJsonResponse(response: Response) {
   }
 }
 
+async function loadAllRows<T>(table: string, orderColumn: string) {
+  const pageSize = 1000;
+  const data: T[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const result = await supabase
+      .from(table)
+      .select("*")
+      .order(orderColumn, { ascending: false })
+      .order("id", { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (result.error) return { data: null, error: result.error };
+    const page = (result.data ?? []) as T[];
+    data.push(...page);
+    if (page.length < pageSize) return { data, error: null };
+  }
+}
+
 function sumColumn(rows: Array<Array<React.ReactNode>>, index: number) {
   return rows.reduce((acc, row) => acc + numericCellValue(row[index]), 0);
 }
@@ -4160,10 +4236,37 @@ function cellText(value: React.ReactNode): string {
   if (typeof value === "string" || typeof value === "number") return String(value);
   if (Array.isArray(value)) return value.map(cellText).join(" ");
   if (typeof value === "object" && "props" in value) {
-    const props = value.props as { children?: React.ReactNode; value?: string | number };
+    const element = value as { type?: unknown; props: { children?: React.ReactNode; value?: string | number } };
+    const props = element.props;
+    if (element.type === "select") {
+      const selectedValue = String(props.value ?? "");
+      return `${selectedValue} ${selectedOptionText(props.children, selectedValue)}`.trim();
+    }
     return String(props.value ?? cellText(props.children));
   }
   return "";
+}
+
+function selectedOptionText(value: React.ReactNode, selectedValue: string): string {
+  if (Array.isArray(value)) {
+    return value.map((child) => selectedOptionText(child, selectedValue)).find(Boolean) ?? "";
+  }
+  if (value == null || typeof value !== "object" || !("props" in value)) return "";
+  const element = value as { type?: unknown; props: { children?: React.ReactNode; value?: string | number } };
+  if (element.type === "option") {
+    const optionText = cellText(element.props.children);
+    const optionValue = String(element.props.value ?? optionText);
+    return optionValue === selectedValue ? optionText : "";
+  }
+  return selectedOptionText(element.props.children, selectedValue);
+}
+
+function normalizeSearchText(value: string) {
+  return value
+    .trim()
+    .toLocaleLowerCase("es")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 function latestMonthWithAccountValue(accounts: NonNullable<LegacyCash["accounts"]>) {

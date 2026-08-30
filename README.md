@@ -758,6 +758,10 @@ Para uso personal, mono-usuario esta bien, pero conviene anadir columna `owner_i
 | `supabase/migrations/010_authenticated_edit_movements.sql` | Edicion y borrado autenticados de movimientos y dividendos |
 | `supabase/migrations/011_report_types_and_asset_tags.sql` | Nuevos tipos de informes y tags de activos/ETF |
 | `supabase/migrations/012_dividend_calendar_events.sql` | Calendario de dividendos declarados y cobros esperados |
+| `supabase/migrations/013_virtual_portfolios_performance.sql` | Carteras virtuales, estrategias e historico de rentabilidad |
+| `supabase/migrations/014_service_role_virtual_portfolio_grants.sql` | Permisos backend para carteras virtuales e informes |
+| `supabase/migrations/015_weighted_cost_reconciliation.sql` | Coste medio ponderado y conciliacion Portfolio/Activity |
+| `supabase/migrations/016_database_audit_hardening.sql` | Vistas con RLS invocador e indices de claves foraneas |
 | `scripts/load_legacy_app_state.mjs` | Carga cash y patrimonio legacy en Supabase |
 | `scripts/nightly_reports.py` | Generacion periodica de informes |
 | `backend/app/services/asset_resolver.py` | Identidad estable de activos |
