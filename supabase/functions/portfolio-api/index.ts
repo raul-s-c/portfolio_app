@@ -616,48 +616,97 @@ async function yahooCurrentQuote(symbol: string) {
   const data = JSON.parse(text);
   const result = data.chart?.result?.[0] || {};
   const meta = result.meta || {};
-  const price = Number(meta.regularMarketPrice || meta.previousClose || 0);
+  const price = Number(meta.regularMarketPrice || meta.previousClose || meta.chartPreviousClose || 0);
   if (!price) throw new Error(`Yahoo ${symbol} no devolvio precio`);
   return {
     price,
-    previous_close: meta.previousClose ? Number(meta.previousClose) : null,
+    previous_close: meta.previousClose || meta.chartPreviousClose ? Number(meta.previousClose || meta.chartPreviousClose) : null,
     currency: normalizeCurrency(meta.currency || "EUR"),
     provider: "yahoo",
     raw_payload: { symbol, meta },
   };
 }
 
+const fxToEurCache = new Map<string, number>();
+
+async function yahooFxToEur(currency: string) {
+  const normalized = normalizeCurrency(currency);
+  if (normalized === "EUR") return 1;
+  const cached = fxToEurCache.get(normalized);
+  if (cached) return cached;
+  const quote = await yahooCurrentQuote(`${normalized}EUR=X`);
+  if (!quote.price) throw new Error(`Sin cambio ${normalized}/EUR`);
+  fxToEurCache.set(normalized, quote.price);
+  return quote.price;
+}
+
 async function loadPriceIdentifiers(maxAssets: number) {
   const positions = (await supabaseRest(`v_open_positions?select=asset_id,name,asset_type&order=market_value.desc&limit=${maxAssets}`)) as Dict[];
   const assetIds = uniqueTerms(positions.map((row) => row.asset_id), maxAssets);
-  if (!assetIds.length) return { assetIds, identifiers: [] as Dict[] };
+  const assets = assetIds.map((assetId) => positions.find((row) => String(row.asset_id) === assetId) || { asset_id: assetId });
+  if (!assetIds.length) return { assetIds, assets, identifiers: [] as Dict[] };
   const identifiers = (await supabaseRest(
-    `asset_identifiers?select=asset_id,provider,symbol,is_primary&asset_id=in.(${inList(assetIds)})`,
+    `asset_identifiers?select=asset_id,provider,symbol,exchange,is_primary,valid_to&asset_id=in.(${inList(assetIds)})`,
   )) as Dict[];
-  return { assetIds, identifiers };
+  return { assetIds, assets, identifiers };
 }
 
-function bestPriceSymbol(assetId: string, identifiers: Dict[]) {
-  return (
-    identifiers.find((row) => String(row.asset_id) === assetId && row.provider === "yahoo")?.symbol ||
-    identifiers.find((row) => String(row.asset_id) === assetId && row.is_primary)?.symbol ||
-    ""
+function priceSymbolsForAsset(assetId: string, identifiers: Dict[]) {
+  const today = new Date().toISOString().slice(0, 10);
+  return uniqueTerms(
+    identifiers
+      .filter((row) => String(row.asset_id) === assetId && (!row.valid_to || String(row.valid_to) >= today))
+      .sort((left, right) => {
+        const priority = (row: Dict) =>
+          row.provider === "yahoo" && row.is_primary ? 0 : row.provider === "yahoo" ? 1 : row.is_primary ? 2 : 3;
+        return priority(left) - priority(right);
+      })
+      .map((row) => row.symbol),
+    12,
   );
+}
+
+async function quoteWithFallback(symbols: string[]) {
+  const attempts = [];
+  for (const symbol of symbols) {
+    try {
+      return { symbol, quote: await yahooCurrentQuote(symbol) };
+    } catch (error) {
+      attempts.push(`${symbol}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(attempts.join(" | ") || "Sin ticker de precio");
+}
+
+async function historyWithFallback(symbols: string[], years: number) {
+  const attempts = [];
+  for (const symbol of symbols) {
+    try {
+      const history = await yahooPriceHistory(symbol, years);
+      if (history.length) return { symbol, history };
+      attempts.push(`${symbol}: sin historico`);
+    } catch (error) {
+      attempts.push(`${symbol}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(attempts.join(" | ") || "Sin ticker de precio");
 }
 
 async function refreshCurrentPrices(payload: Dict) {
   const maxAssets = Number(payload.max_assets || 250);
-  const { assetIds, identifiers } = await loadPriceIdentifiers(maxAssets);
+  const { assetIds, assets, identifiers } = await loadPriceIdentifiers(maxAssets);
   const rows = [];
   const errors = [];
   for (const assetId of assetIds) {
-    const symbol = asString(bestPriceSymbol(assetId, identifiers));
-    if (!symbol) {
-      errors.push({ asset_id: assetId, error: "Sin ticker de precio" });
+    const asset = assets.find((row) => String(row.asset_id) === assetId) || {};
+    const symbols = priceSymbolsForAsset(assetId, identifiers);
+    if (!symbols.length) {
+      errors.push({ asset_id: assetId, name: asset.name, asset_type: asset.asset_type, stage: "current", error: "Sin ticker de precio" });
       continue;
     }
     try {
-      const quote = await yahooCurrentQuote(symbol);
+      const { symbol, quote } = await quoteWithFallback(symbols);
+      const toEur = await yahooFxToEur(quote.currency);
       rows.push({
         asset_id: assetId,
         priced_at: new Date().toISOString(),
@@ -665,10 +714,17 @@ async function refreshCurrentPrices(payload: Dict) {
         previous_close: quote.previous_close,
         currency: quote.currency,
         provider: quote.provider,
-        raw_payload: quote.raw_payload,
+        raw_payload: { ...quote.raw_payload, to_eur: toEur, resolved_symbol: symbol },
       });
     } catch (error) {
-      errors.push({ asset_id: assetId, symbol, error: error instanceof Error ? error.message : String(error) });
+      errors.push({
+        asset_id: assetId,
+        name: asset.name,
+        asset_type: asset.asset_type,
+        stage: "current",
+        symbols,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   if (rows.length) {
@@ -684,21 +740,29 @@ async function refreshCurrentPrices(payload: Dict) {
 async function refreshPriceHistory(payload: Dict) {
   const years = Number(payload.years || 5);
   const maxAssets = Number(payload.max_assets || 250);
-  const { assetIds, identifiers } = await loadPriceIdentifiers(maxAssets);
+  const { assetIds, assets, identifiers } = await loadPriceIdentifiers(maxAssets);
   if (!assetIds.length) return { status: "ok", assets: 0, rows: 0, errors: [] };
   const rows = [];
   const errors = [];
   for (const assetId of assetIds) {
-    const symbol = asString(bestPriceSymbol(assetId, identifiers));
-    if (!symbol) {
-      errors.push({ asset_id: assetId, error: "Sin ticker de precio" });
+    const asset = assets.find((row) => String(row.asset_id) === assetId) || {};
+    const symbols = priceSymbolsForAsset(assetId, identifiers);
+    if (!symbols.length) {
+      errors.push({ asset_id: assetId, name: asset.name, asset_type: asset.asset_type, stage: "history", error: "Sin ticker de precio" });
       continue;
     }
     try {
-      const history = await yahooPriceHistory(String(symbol), years);
-      rows.push(...history.map((row: Dict) => ({ ...row, asset_id: assetId })));
+      const { symbol, history } = await historyWithFallback(symbols, years);
+      rows.push(...history.map((row: Dict) => ({ ...row, asset_id: assetId, raw_payload: { ...(row.raw_payload as Dict), resolved_symbol: symbol } })));
     } catch (error) {
-      errors.push({ asset_id: assetId, symbol, error: error instanceof Error ? error.message : String(error) });
+      errors.push({
+        asset_id: assetId,
+        name: asset.name,
+        asset_type: asset.asset_type,
+        stage: "history",
+        symbols,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   for (let index = 0; index < rows.length; index += 500) {

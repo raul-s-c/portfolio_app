@@ -1348,6 +1348,101 @@ tfoot th {
   font-size: 13px;
 }
 
+.lc-tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.lc-tooltip i {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid #a9b8cc;
+  border-radius: 50%;
+  color: #52657d;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.lc-tooltip::after {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: max-content;
+  max-width: 280px;
+  padding: 8px 10px;
+  border: 1px solid #273955;
+  border-radius: 5px;
+  background: #071a36;
+  box-shadow: 0 8px 24px rgba(7, 26, 54, 0.18);
+  color: #ffffff;
+  content: attr(data-tooltip);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(3px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.lc-tooltip:hover::after,
+.lc-tooltip:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.refresh-issues {
+  margin: 0 14px 14px;
+  border: 1px solid #f0c7b5;
+  border-radius: 6px;
+  background: #fffaf7;
+}
+
+.refresh-issues summary {
+  cursor: pointer;
+  padding: 11px 13px;
+  color: #8a3517;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.refresh-issue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1px;
+  border-top: 1px solid #f0c7b5;
+  background: #f0c7b5;
+}
+
+.refresh-issue-grid article {
+  display: grid;
+  gap: 3px;
+  padding: 11px 13px;
+  background: #ffffff;
+}
+
+.refresh-issue-grid article span {
+  color: #8a3517;
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.refresh-issue-grid article p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #5c6675;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .details-panel > summary {
   cursor: pointer;
   padding: 15px;

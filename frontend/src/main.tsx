@@ -65,6 +65,7 @@ type Position = {
   market_value: number | null;
   daily_gain: number | null;
   price_currency: string | null;
+  to_eur: number | null;
   priced_at: string | null;
   total_purchases?: number | null;
   total_sale_proceeds?: number | null;
@@ -206,6 +207,17 @@ type VirtualPortfolioAssignment = {
   target_weight: number | null;
   notes: string | null;
 };
+
+type PriceRefreshIssue = {
+  asset_id: string;
+  name?: string;
+  asset_type?: string;
+  stage?: "current" | "history";
+  symbols?: string[];
+  error: string;
+};
+
+type EnrichedDividend = Dividend & { asset?: Asset; broker?: Broker };
 
 type LegacyCash = {
   accounts?: Array<{ name: string; values?: Record<string, number>; comments?: Record<string, string> }>;
@@ -367,6 +379,7 @@ function App() {
   const [refreshingDividendCalendar, setRefreshingDividendCalendar] = useState(false);
   const [generatingReportType, setGeneratingReportType] = useState<ReportType | "">("");
   const [refreshingPriceHistory, setRefreshingPriceHistory] = useState(false);
+  const [priceRefreshIssues, setPriceRefreshIssues] = useState<PriceRefreshIssue[]>([]);
   const [message, setMessage] = useState("");
   const [positionSearch, setPositionSearch] = useState("");
   const [movementSearch, setMovementSearch] = useState("");
@@ -420,6 +433,7 @@ function App() {
     setDividendCalendar([]);
     setPriceSnapshots([]);
     setPortfolioSnapshots([]);
+    setPriceRefreshIssues([]);
     setQueue([]);
     setReports([]);
     setStrategies([]);
@@ -630,9 +644,11 @@ function App() {
       }
       const result = await readJsonResponse(response);
       await loadDashboardData();
-      const errors = Array.isArray(result.errors) ? result.errors.length : 0;
+      const issues = Array.isArray(result.errors) ? (result.errors as PriceRefreshIssue[]) : [];
+      setPriceRefreshIssues(issues);
+      const issueAssets = [...new Set(issues.map((issue) => issue.name || issue.asset_id))];
       setMessage(
-        `Precios actualizados: ${result.current_rows ?? 0} actuales y ${result.rows ?? 0} historicos para ${result.assets ?? 0} activos${errors ? ` (${errors} incidencias)` : ""}.`
+        `Precios actualizados: ${result.current_rows ?? 0} actuales y ${result.rows ?? 0} historicos para ${result.assets ?? 0} activos${issues.length ? `. Incidencias: ${issueAssets.join(", ")}` : ". Sin incidencias"}`
       );
     } catch (error) {
       setMessage(`No he podido actualizar historicos. ${error instanceof Error ? error.message : ""}`);
@@ -1102,19 +1118,23 @@ function App() {
       });
   }, [transactions, movementSearch, assetById, brokerById, primarySymbols]);
 
-  const dividendRows = useMemo(() => {
-    const q = dividendSearch.trim().toLowerCase();
-    return dividends
-      .map((row) => ({
+  const enrichedDividends = useMemo<EnrichedDividend[]>(
+    () =>
+      dividends.map((row) => ({
         ...row,
         asset: assetById.get(row.asset_id),
         broker: brokerById.get(row.broker_id),
-      }))
-      .filter((row) => {
+      })),
+    [dividends, assetById, brokerById]
+  );
+
+  const dividendRows = useMemo(() => {
+    const q = dividendSearch.trim().toLowerCase();
+    return enrichedDividends.filter((row) => {
         const symbol = primarySymbols.get(row.asset_id) ?? "";
         return !q || [symbol, row.asset?.name, row.broker?.name, row.source_file].some((v) => String(v ?? "").toLowerCase().includes(q));
       });
-  }, [dividends, dividendSearch, assetById, brokerById, primarySymbols]);
+  }, [enrichedDividends, dividendSearch, primarySymbols]);
 
   const filteredAssets = useMemo(() => {
     const q = assetSearch.trim().toLowerCase();
@@ -1218,6 +1238,7 @@ function App() {
           setSearch={setPositionSearch}
           onRefreshPrices={refreshPriceHistory}
           refreshingPrices={refreshingPriceHistory}
+          refreshIssues={priceRefreshIssues}
         />
       )}
       {activeTab === "transactions" && (
@@ -1269,6 +1290,7 @@ function App() {
           strategies={strategies}
           virtualPortfolios={virtualPortfolios}
           assignments={virtualAssignments}
+          dividends={enrichedDividends}
           onCreatePortfolio={createVirtualPortfolio}
           onSaveAssignment={saveVirtualAssignment}
         />
@@ -1368,6 +1390,24 @@ function Metric({ label, value, tone }: { label: string; value: string | number;
       <span>{label}</span>
       <strong className={tone}>{value}</strong>
     </article>
+  );
+}
+
+function PositionMarketValue({
+  position,
+}: {
+  position: Position & { marketValue: number };
+}) {
+  const currency = normalizeCurrency(position.price_currency);
+  const isForeignEtf = position.asset_type === "etf" && currency !== "EUR" && position.price != null;
+  if (!isForeignEtf) return <>{formatMoney(position.marketValue)}</>;
+  const localValue = toNumber(position.quantity) * toNumber(position.price);
+  const tooltip = `Precio en LC: ${formatPlainMoney(position.price, currency)} | Valor en LC: ${formatPlainMoney(localValue, currency)}`;
+  return (
+    <span className="lc-tooltip" data-tooltip={tooltip} aria-label={tooltip} tabIndex={0}>
+      {formatMoney(position.marketValue)}
+      <i aria-hidden="true">i</i>
+    </span>
   );
 }
 
@@ -1487,7 +1527,7 @@ function DashboardView({
             row.symbol,
             row.name,
             row.broker,
-            formatMoney(row.marketValue),
+            <PositionMarketValue position={row} />,
             formatPercent(totals.marketValue ? row.marketValue / totals.marketValue : 0),
             <span className={row.latentGain >= 0 ? "good" : "bad"}>{formatMoney(row.latentGain)}</span>,
           ])}
@@ -1504,7 +1544,7 @@ function DashboardView({
             row.symbol,
             row.name,
             row.broker,
-            formatMoney(row.marketValue),
+            <PositionMarketValue position={row} />,
             formatPercent(etfTotal ? row.marketValue / etfTotal : 0),
             <span className={row.latentGain >= 0 ? "good" : "bad"}>{formatMoney(row.latentGain)}</span>,
           ])}
@@ -1527,6 +1567,7 @@ function PositionsView({
   setSearch,
   onRefreshPrices,
   refreshingPrices,
+  refreshIssues,
 }: {
   rows: Array<Position & { symbol: string; costBasis: number; marketValue: number; dailyGain: number; latentGain: number }>;
   brokerNames: string[];
@@ -1539,6 +1580,7 @@ function PositionsView({
   setSearch: (value: string) => void;
   onRefreshPrices: () => void;
   refreshingPrices: boolean;
+  refreshIssues: PriceRefreshIssue[];
 }) {
   const latestPriceAt = latestPositionPriceDate(rows);
   return (
@@ -1567,6 +1609,20 @@ function PositionsView({
           </select>
         </div>
       </div>
+      {refreshIssues.length > 0 && (
+        <details className="refresh-issues">
+          <summary>{refreshIssues.length} incidencias de mercado pendientes</summary>
+          <div className="refresh-issue-grid">
+            {refreshIssues.map((issue, index) => (
+              <article key={`${issue.asset_id}:${issue.stage ?? "price"}:${index}`}>
+                <strong>{issue.name || issue.asset_id}</strong>
+                <span>{issue.stage === "history" ? "Historico" : "Precio actual"}</span>
+                <p>{issue.error}</p>
+              </article>
+            ))}
+          </div>
+        </details>
+      )}
       <SimpleTable
         columns={[
           "Ticker",
@@ -1590,7 +1646,7 @@ function PositionsView({
           formatNumber(row.quantity),
           formatPlainMoney(row.price, row.price_currency ?? "EUR"),
           row.price_currency ?? "EUR",
-          formatMoney(row.marketValue),
+          <PositionMarketValue position={row} />,
           formatMoney(row.costBasis),
           <span className={row.latentGain >= 0 ? "good" : "bad"}>{formatMoney(row.latentGain)}</span>,
           <span className={row.dailyGain >= 0 ? "good" : "bad"}>{formatMoney(row.dailyGain)}</span>,
@@ -2552,7 +2608,7 @@ function EtfView({
                 type="checkbox"
               />,
               formatNumber(position.quantity),
-              formatMoney(position.marketValue),
+              <PositionMarketValue position={position} />,
               formatPercent(actualWeight),
               <input value={targetWeight ? String(Math.round(targetWeight * 10000) / 100) : ""} onChange={(event) => changePositionEtf(symbol, position, "targetWeight", event.target.value)} inputMode="decimal" />,
               <span className={delta >= 0 ? "good" : "bad"}>{formatPercent(delta)}</span>,
@@ -3281,6 +3337,7 @@ function VirtualPortfoliosView({
   strategies,
   virtualPortfolios,
   assignments,
+  dividends,
   onCreatePortfolio,
   onSaveAssignment,
 }: {
@@ -3288,6 +3345,7 @@ function VirtualPortfoliosView({
   strategies: PortfolioStrategy[];
   virtualPortfolios: VirtualPortfolio[];
   assignments: VirtualPortfolioAssignment[];
+  dividends: EnrichedDividend[];
   onCreatePortfolio: (name: string, strategyId: string) => void;
   onSaveAssignment: (assetId: string, brokerId: string, virtualPortfolioId: string, targetWeight: string, notes: string) => void;
 }) {
@@ -3314,18 +3372,25 @@ function VirtualPortfoliosView({
   }, [positions, assignments]);
 
   const strategyById = useMemo(() => new Map(strategies.map((strategy) => [strategy.id, strategy])), [strategies]);
+  const dividendsByPosition = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const dividend of dividends) {
+      const key = `${dividend.asset_id}:${dividend.broker_id}`;
+      totals.set(key, (totals.get(key) ?? 0) + toNumber(dividend.net_amount));
+    }
+    return totals;
+  }, [dividends]);
   const portfolioSummary = virtualPortfolios.map((portfolio) => {
-    const members = positions.filter((position) =>
-      assignments.some(
-        (assignment) =>
-          assignment.virtual_portfolio_id === portfolio.id &&
-          assignment.asset_id === position.asset_id &&
-          assignment.broker_id === position.broker_id
-      )
+    const memberKeys = new Set(
+      assignments
+        .filter((assignment) => assignment.virtual_portfolio_id === portfolio.id)
+        .map((assignment) => `${assignment.asset_id}:${assignment.broker_id}`)
     );
+    const members = positions.filter((position) => memberKeys.has(`${position.asset_id}:${position.broker_id}`));
     const marketValue = members.reduce((acc, row) => acc + row.marketValue, 0);
     const costBasis = members.reduce((acc, row) => acc + row.costBasis, 0);
-    return { portfolio, members, marketValue, costBasis, latentGain: marketValue - costBasis };
+    const accumulatedDividends = [...memberKeys].reduce((acc, key) => acc + (dividendsByPosition.get(key) ?? 0), 0);
+    return { portfolio, members, marketValue, costBasis, latentGain: marketValue - costBasis, accumulatedDividends };
   });
 
   return (
@@ -3338,7 +3403,7 @@ function VirtualPortfoliosView({
         </div>
       </section>
       <section className="three-grid">
-        {portfolioSummary.map(({ portfolio, members, marketValue, costBasis, latentGain }) => {
+        {portfolioSummary.map(({ portfolio, members, marketValue, costBasis, latentGain, accumulatedDividends }) => {
           const strategy = portfolio.strategy_id ? strategyById.get(portfolio.strategy_id) : null;
           return (
             <article className="portfolio-card" key={portfolio.id}>
@@ -3349,6 +3414,7 @@ function VirtualPortfoliosView({
                 <Metric label="Valor" value={formatMoney(marketValue)} />
                 <Metric label="P&G" value={formatMoney(latentGain)} tone={latentGain >= 0 ? "good" : "bad"} />
                 <Metric label="Rent." value={formatPercent(costBasis ? latentGain / costBasis : 0)} tone={latentGain >= 0 ? "good" : "bad"} />
+                <Metric label="Dividendos netos" value={formatMoney(accumulatedDividends)} />
                 <Metric label="Posiciones" value={members.length} />
               </div>
             </article>
@@ -3389,8 +3455,8 @@ function VirtualPortfoliosView({
           <span className="muted-inline">{positions.length} posiciones abiertas</span>
         </div>
         <EditableTable
-          columns={["Ticker", "Activo", "Broker", "Valor EUR", "Cartera virtual", "Peso objetivo", "Nota", ""]}
-          totalColumns={[{ index: 3, format: "money" }]}
+          columns={["Ticker", "Activo", "Broker", "Valor EUR", "Dividendos netos", "Cartera virtual", "Peso objetivo", "Nota", ""]}
+          totalColumns={[{ index: 3, format: "money" }, { index: 4, format: "money" }]}
           rows={positions.map((position) => {
             const key = `${position.asset_id}:${position.broker_id}`;
             const draft = drafts[key] ?? { portfolioId: "", targetWeight: "", notes: "" };
@@ -3399,7 +3465,8 @@ function VirtualPortfoliosView({
               position.symbol,
               position.name,
               position.broker,
-              formatMoney(position.marketValue),
+              <PositionMarketValue position={position} />,
+              formatMoney(dividendsByPosition.get(key) ?? 0),
               <select value={draft.portfolioId} onChange={(event) => setDraft({ portfolioId: event.target.value })}>
                 <option value="">Sin asignar</option>
                 {virtualPortfolios.map((portfolio) => (
