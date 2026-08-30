@@ -276,6 +276,17 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "backup", label: "Backup" },
 ];
 
+const PRIMARY_NAV: Array<{ id: TabId; label: string }> = [
+  { id: "dashboard", label: "Overview" },
+  { id: "positions", label: "Holdings" },
+  { id: "snapshots", label: "Performance" },
+  { id: "virtualPortfolios", label: "Allocation" },
+  { id: "dividendCalendar", label: "Income" },
+  { id: "transactions", label: "Transactions" },
+  { id: "queue", label: "Watchlist" },
+  { id: "reports", label: "Reports" },
+];
+
 const DEFAULT_ASSET_FORM: AssetForm = {
   name: "",
   symbol: "",
@@ -1073,10 +1084,30 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
+        <div className="brand-lockup">
           <p className="eyebrow">Portfolio App</p>
           <h1>Cartera privada</h1>
         </div>
+        <nav className="tabs" aria-label="Vistas de cartera">
+          {PRIMARY_NAV.map((tab) => (
+            <button key={tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => setActiveTab(tab.id)}>
+              {tab.label}
+            </button>
+          ))}
+          <select
+            className={!PRIMARY_NAV.some((tab) => tab.id === activeTab) ? "active" : ""}
+            aria-label="Mas vistas"
+            value={!PRIMARY_NAV.some((tab) => tab.id === activeTab) ? activeTab : ""}
+            onChange={(event) => event.target.value && setActiveTab(event.target.value as TabId)}
+          >
+            <option value="">Mas</option>
+            {TABS.filter((tab) => !PRIMARY_NAV.some((primary) => primary.id === tab.id)).map((tab) => (
+              <option key={tab.id} value={tab.id}>
+                {tab.label}
+              </option>
+            ))}
+          </select>
+        </nav>
         <div className="login-box">
           {session ? (
             <>
@@ -1099,20 +1130,14 @@ function App() {
         </div>
       </header>
 
-      <nav className="tabs" aria-label="Vistas de cartera">
-        {TABS.map((tab) => (
-          <button key={tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => setActiveTab(tab.id)}>
-            {tab.label}
-          </button>
-        ))}
-      </nav>
-
-      <section className="summary-grid">
-        <Metric label="Valor mercado EUR" value={formatMoney(totals.marketValue)} />
-        <Metric label="Coste EUR" value={formatMoney(totals.costBasis)} />
-        <Metric label="P&G latente" value={formatMoney(totals.latentGain)} tone={totals.latentGain >= 0 ? "good" : "bad"} />
-        <Metric label="Dividendos netos" value={formatMoney(totals.dividendsNet)} />
-      </section>
+      {activeTab !== "dividendCalendar" && (
+        <section className="summary-grid">
+          <Metric label="Valor mercado EUR" value={formatMoney(totals.marketValue)} />
+          <Metric label="Coste EUR" value={formatMoney(totals.costBasis)} />
+          <Metric label="P&G latente" value={formatMoney(totals.latentGain)} tone={totals.latentGain >= 0 ? "good" : "bad"} />
+          <Metric label="Dividendos netos" value={formatMoney(totals.dividendsNet)} />
+        </section>
+      )}
 
       {message && <p className="message">{message}</p>}
       {legacyStateMissing && ["cash", "wealth", "property", "etf", "backup"].includes(activeTab) && (
@@ -1919,50 +1944,59 @@ function DividendCalendarView({
   const selectedEvents = eventsByDate.get(selectedDate) ?? [];
   const monthTotal = filteredEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
   const selectedTotal = selectedEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
+  const monthlyForecast = calendarMonthlySeries(upcoming);
   return (
-    <>
-      <section className="command-center calendar-hero">
-        <div>
-          <span className="kicker">Dividendos declarados</span>
-          <h2>Calendario interactivo</h2>
-          <p>Eventos previstos por fecha, importe esperado y confianza de la fuente. La busqueda web se lanza solo cuando tu lo pides.</p>
-        </div>
-        <div className="inline-actions">
-          <button onClick={onRefresh} disabled={refreshing}>
-            {refreshing ? "Actualizando..." : "Actualizar calendario"}
-          </button>
-          <button className="ghost" onClick={() => onGenerateReport("etf_resilient_portfolio")} disabled={Boolean(generatingReportType)}>
-            {generatingReportType === "etf_resilient_portfolio" ? "Generando..." : "Generar informe ETF"}
-          </button>
-        </div>
-      </section>
-      <section className="panel">
-        <div className="summary-grid compact">
-          <Metric label="Esperado EUR" value={formatMoney(expectedEur)} />
-          <Metric label="Alta confianza EUR" value={formatMoney(confirmedTotal)} />
-          <Metric label="Eventos" value={upcoming.length} />
-          <Metric label="Confianza media" value={formatPercent(averageConfidence)} />
-        </div>
-      </section>
+    <section className="income-workbench">
+      <div className="income-kpis">
+        <Metric label="Expected Income" value={formatMoney(expectedEur)} />
+        <Metric label="High Confidence" value={formatMoney(confirmedTotal)} />
+        <Metric label="Upcoming" value={upcoming.length} />
+        <Metric label="Monthly Average" value={formatMoney(monthlyForecast.length ? expectedEur / monthlyForecast.length : 0)} />
+        <Metric label="Confidence" value={formatPercent(averageConfidence)} />
+        <Metric label="Non EUR Events" value={nonEurEvents} />
+      </div>
       <section className="calendar-layout">
         <aside className="panel control-rail">
-          <h2>Vista</h2>
+          <div className="rail-title">
+            <h2>Analysis</h2>
+            <span>Dividend income</span>
+          </div>
           <label>
-            Mes
+            Virtual Portfolio
+            <select>
+              <option>Core Portfolio</option>
+              <option>ETF MyInvestor resistente</option>
+            </select>
+          </label>
+          <label>
+            Strategy
+            <select>
+              <option>All Strategies</option>
+              <option>Cartera ETF resistente</option>
+            </select>
+          </label>
+          <label>
+            Broker
+            <select>
+              <option>All Brokers</option>
+            </select>
+          </label>
+          <label>
+            Period
             <input type="month" value={month} onChange={(event) => setMonth(event.target.value)} />
           </label>
           <label>
-            Tipo
+            Asset Type
             <select value={calendarType} onChange={(event) => setCalendarType(event.target.value)}>
-              <option value="">Acciones y ETF</option>
-              <option value="stock">Acciones</option>
+              <option value="">All Asset Types</option>
+              <option value="stock">Stocks</option>
               <option value="etf">ETF</option>
             </select>
           </label>
           <label>
-            Moneda
+            Currency
             <select value={currencyFilter} onChange={(event) => setCurrencyFilter(event.target.value)}>
-              <option value="">Todas</option>
+              <option value="">All Currencies</option>
               {currencies.map((currency) => (
                 <option key={currency} value={currency}>
                   {currency}
@@ -1974,53 +2008,107 @@ function DividendCalendarView({
             <Metric label="Mes visible" value={formatPlainMoney(monthTotal, currencyFilter || "EUR")} />
             <Metric label="Dia elegido" value={formatPlainMoney(selectedTotal, currencyFilter || "EUR")} />
           </div>
+          <button className="ghost" onClick={() => {
+            setCalendarType("");
+            setCurrencyFilter("");
+          }}>
+            Reset Filters
+          </button>
           <p className="muted no-pad">{nonEurEvents} eventos no EUR. Revisa fuente y confianza antes de darlo por definitivo.</p>
         </aside>
         <section className="panel calendar-board">
-          <div className="calendar-weekdays">
-            {["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"].map((day) => (
-              <span key={day}>{day}</span>
-            ))}
+          <div className="calendar-toolbar">
+            <div className="calendar-title">
+              <h2>Dividend Calendar</h2>
+              <button className="icon-button" onClick={() => setMonth(addMonths(month, -1))} aria-label="Mes anterior">
+                ‹
+              </button>
+              <button className="icon-button" onClick={() => setMonth(addMonths(month, 1))} aria-label="Mes siguiente">
+                ›
+              </button>
+              <strong>{new Date(`${month}-01T00:00:00`).toLocaleDateString("es-ES", { month: "long", year: "numeric" })}</strong>
+            </div>
+            <div className="calendar-actions">
+              <button className="ghost" onClick={onRefresh} disabled={refreshing}>
+                {refreshing ? "Refreshing..." : "Refresh Calendar"}
+              </button>
+              <button onClick={() => onGenerateReport("etf_resilient_portfolio")} disabled={Boolean(generatingReportType)}>
+                {generatingReportType === "etf_resilient_portfolio" ? "Generating..." : "Generate Report"}
+              </button>
+            </div>
           </div>
-          <div className="calendar-grid">
-            {calendarDays.map((day) => {
-              const dayEvents = eventsByDate.get(day.date) ?? [];
-              const isSelected = day.date === selectedDate;
-              return (
-                <button
-                  type="button"
-                  key={day.date}
-                  className={`calendar-cell ${day.inMonth ? "" : "muted-day"} ${isSelected ? "selected" : ""}`}
-                  onClick={() => setSelectedDate(day.date)}
-                >
-                  <span className="day-number">{day.label}</span>
-                  <strong>{dayEvents.length ? formatPlainMoney(dayEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0), dayEvents[0].currency) : ""}</strong>
-                  <div className="calendar-chips">
-                    {dayEvents.slice(0, 3).map((event) => (
-                      <span className={`calendar-chip ${event.asset_type}`} key={event.id}>
-                        {event.symbol ?? event.asset_name} {formatPlainMoney(event.expected_gross_amount, event.currency)}
-                      </span>
-                    ))}
-                    {dayEvents.length > 3 && <span className="calendar-chip more">+{dayEvents.length - 3}</span>}
-                  </div>
-                </button>
-              );
-            })}
+          <div className="calendar-frame">
+            <div className="calendar-weekdays">
+              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => (
+                <span key={day}>{day}</span>
+              ))}
+            </div>
+            <div className="calendar-grid">
+              {calendarDays.map((day) => {
+                const dayEvents = eventsByDate.get(day.date) ?? [];
+                const isSelected = day.date === selectedDate;
+                return (
+                  <button
+                    type="button"
+                    key={day.date}
+                    className={`calendar-cell ${day.inMonth ? "" : "muted-day"} ${isSelected ? "selected" : ""}`}
+                    onClick={() => setSelectedDate(day.date)}
+                  >
+                    <span className="day-number">{day.label}</span>
+                    <strong>{dayEvents.length ? formatPlainMoney(dayEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0), dayEvents[0].currency) : ""}</strong>
+                    <div className="calendar-chips">
+                      {dayEvents.slice(0, 3).map((event) => (
+                        <span className={`calendar-chip ${event.asset_type} ${toNumber(event.confidence) >= 0.7 ? "high" : "medium"}`} key={event.id}>
+                          <b>{event.symbol ?? event.asset_name}</b>
+                          <em>{formatPlainMoney(event.expected_gross_amount, event.currency)}</em>
+                        </span>
+                      ))}
+                      {dayEvents.length > 3 && <span className="calendar-chip more">+{dayEvents.length - 3}</span>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="calendar-legend">
+            <span><i className="dot blue" /> Ex-Dividend Date</span>
+            <span><i className="dot green" /> Payment Date</span>
+            <span><i className="dot amber" /> Estimated</span>
+            <span><i className="dot eur" /> EUR</span>
+            <span><i className="dot usd" /> USD</span>
           </div>
         </section>
         <aside className="panel day-detail">
-          <h2>{new Date(`${selectedDate}T00:00:00`).toLocaleDateString("es-ES", { weekday: "long", day: "2-digit", month: "long" })}</h2>
+          <div className="day-detail-header">
+            <h2>{new Date(`${selectedDate}T00:00:00`).toLocaleDateString("es-ES", { weekday: "long", day: "2-digit", month: "long" })}</h2>
+            <button className="icon-button" onClick={() => setSelectedDate(new Date().toISOString().slice(0, 10))} aria-label="Hoy">
+              ×
+            </button>
+          </div>
+          <dl className="day-stats">
+            <div><dt>Expected Income</dt><dd>{formatPlainMoney(selectedTotal, selectedEvents[0]?.currency ?? "EUR")}</dd></div>
+            <div><dt>Payments</dt><dd>{selectedEvents.length}</dd></div>
+            <div><dt>Avg. Confidence</dt><dd>{formatPercent(selectedEvents.length ? selectedEvents.reduce((acc, event) => acc + toNumber(event.confidence), 0) / selectedEvents.length : 0)}</dd></div>
+          </dl>
           {selectedEvents.length === 0 ? (
             <p className="empty">Sin cobros previstos este dia.</p>
           ) : (
             selectedEvents.map((event) => (
               <article key={event.id} className="event-card">
-                <span>{assetTypeLabel(event.asset_type)} - {event.broker}</span>
-                <strong>{event.symbol ?? event.asset_name}</strong>
-                <p>{formatPlainMoney(event.expected_gross_amount, event.currency)} · conf. {formatPercent(event.confidence)}</p>
+                <header>
+                  <strong>{event.symbol ?? event.asset_name}</strong>
+                  <span>{event.currency}</span>
+                </header>
+                <p>{event.asset_name}</p>
+                <dl>
+                  <div><dt>Ex-Dividend</dt><dd>{event.ex_date ?? "-"}</dd></div>
+                  <div><dt>Payment Date</dt><dd>{event.payment_date ?? "-"}</dd></div>
+                  <div><dt>Expected Amount</dt><dd>{formatPlainMoney(event.expected_gross_amount, event.currency)}</dd></div>
+                  <div><dt>Confidence</dt><dd>{formatPercent(event.confidence)}</dd></div>
+                </dl>
                 {event.source_url && (
                   <a href={event.source_url} target="_blank" rel="noreferrer">
-                    fuente
+                    Source
                   </a>
                 )}
               </article>
@@ -2028,41 +2116,40 @@ function DividendCalendarView({
           )}
         </aside>
       </section>
-      <section className="panel">
-        <h2>Proximos cobros estimados</h2>
-        <SimpleTable
-          columns={["Pago", "Ex-date", "Ticker", "Activo", "Tipo", "Broker", "Cantidad", "Dividendo", "Esperado", "Estado", "Conf.", "Fuente"]}
-          totalColumns={[
-            { index: 6, format: "number" },
-            { index: 8, format: "money" },
-          ]}
-          rows={upcoming.map((event) => [
-            event.payment_date ?? "",
-            event.ex_date ?? "",
-            event.symbol ?? "",
-            event.asset_name ?? "",
-            assetTypeLabel(event.asset_type),
-            event.broker ?? "",
-            formatNumber(event.quantity),
-            formatPlainMoney(event.dividend_amount, event.currency),
-            formatPlainMoney(event.expected_gross_amount, event.currency),
-            event.status,
-            formatPercent(event.confidence),
-            event.source_url ? (
-              <a href={event.source_url} target="_blank" rel="noreferrer">
-                {event.source_title || "fuente"}
-              </a>
-            ) : (
-              ""
-            ),
-          ])}
-        />
+      <section className="income-bottom-grid">
+        <section className="panel">
+          <h2>Upcoming Payments</h2>
+          <SimpleTable
+            columns={["Date", "Ticker", "Name", "Amount", "Ccy", "Ex-Dividend", "Confidence", "Source"]}
+            totalColumns={[{ index: 3, format: "money" }]}
+            rows={upcoming.slice(0, 18).map((event) => [
+              event.payment_date ?? "",
+              event.symbol ?? "",
+              event.asset_name ?? "",
+              formatPlainMoney(event.expected_gross_amount, event.currency),
+              event.currency,
+              event.ex_date ?? "",
+              formatPercent(event.confidence),
+              event.source_url ? (
+                <a href={event.source_url} target="_blank" rel="noreferrer">
+                  {event.source_title || "Source"}
+                </a>
+              ) : (
+                ""
+              ),
+            ])}
+          />
+        </section>
+        <section className="panel chart-panel">
+          <h2>Expected Income (Monthly)</h2>
+          <CalendarBarChart rows={monthlyForecast} />
+        </section>
       </section>
       <section className="two-grid">
         <CalendarSummaryTable title="Por mes previsto" rows={byMonth} />
         <CalendarSummaryTable title="Por activo previsto" rows={byAsset} />
       </section>
-    </>
+    </section>
   );
 }
 
@@ -3318,6 +3405,34 @@ function CalendarSummaryTable({ title, rows }: { title: string; rows: CalendarAg
   );
 }
 
+function CalendarBarChart({ rows }: { rows: Array<{ month: string; expected: number }> }) {
+  if (!rows.length) return <p className="empty">Sin datos para graficar.</p>;
+  const max = Math.max(...rows.map((row) => row.expected), 1);
+  return (
+    <div className="income-chart" role="img" aria-label="Expected income monthly chart">
+      <div className="chart-axis">
+        {[1, 0.75, 0.5, 0.25, 0].map((ratio) => (
+          <span key={ratio}>{formatMoney(max * ratio)}</span>
+        ))}
+      </div>
+      <div className="chart-bars">
+        {rows.map((row) => (
+          <div className="chart-month" key={row.month}>
+            <div className="chart-bar-pair single">
+              <span className="bar-current" style={{ height: `${Math.max(4, (row.expected / max) * 100)}%` }} />
+            </div>
+            <strong>{formatPlainMoney(row.expected, "EUR").replace(",00", "")}</strong>
+            <em>{row.month}</em>
+          </div>
+        ))}
+      </div>
+      <div className="chart-legend">
+        <span><i className="dot blue" /> Expected from declared events</span>
+      </div>
+    </div>
+  );
+}
+
 function SimpleTable({
   columns,
   rows,
@@ -3835,6 +3950,27 @@ function monthCalendarDays(month: string) {
       date: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`,
       label: String(date.getDate()),
       inMonth: date.getMonth() === monthIndex,
+    };
+  });
+}
+
+function addMonths(month: string, delta: number) {
+  const [yearRaw, monthRaw] = month.split("-").map(Number);
+  const date = new Date(Number.isFinite(yearRaw) ? yearRaw : new Date().getFullYear(), Number.isFinite(monthRaw) ? monthRaw - 1 : new Date().getMonth(), 1);
+  date.setMonth(date.getMonth() + delta);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function calendarMonthlySeries(events: DividendCalendarEvent[]) {
+  const year = new Date().getFullYear();
+  return Array.from({ length: 12 }, (_, index) => {
+    const key = `${year}-${String(index + 1).padStart(2, "0")}`;
+    const expected = events
+      .filter((event) => monthKey(event.payment_date ?? event.ex_date) === key && normalizeCurrency(event.currency) === "EUR")
+      .reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
+    return {
+      month: new Date(year, index, 1).toLocaleDateString("es-ES", { month: "short" }),
+      expected,
     };
   });
 }
