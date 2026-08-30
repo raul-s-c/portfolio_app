@@ -775,6 +775,7 @@ Para uso personal, mono-usuario esta bien, pero conviene anadir columna `owner_i
 | `supabase/migrations/019_remove_legacy_anon_sync_access.sql` | Retirada del acceso anonimo heredado a sincronizacion legacy |
 | `supabase/migrations/020_realized_gains_detail.sql` | Detalle por venta del coste descargado y P&G realizado |
 | `supabase/migrations/021_fix_eur_etf_listings.sql` | Lineas EUR verificadas para CNYB y XCHA |
+| `supabase/migrations/022_fix_wqdv_eur_listing.sql` | Linea Xetra EUR y movimientos normalizados para WQDV/QDVW |
 | `scripts/load_legacy_app_state.mjs` | Carga cash y patrimonio legacy en Supabase |
 | `scripts/nightly_reports.py` | Generacion periodica de informes |
 | `backend/app/services/asset_resolver.py` | Identidad estable de activos |
