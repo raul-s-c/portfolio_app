@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { Root, createRoot } from "react-dom/client";
 import { Session, SupabaseClient, createClient } from "@supabase/supabase-js";
 import "./styles.css";
@@ -80,6 +80,26 @@ type PortfolioReconciliation = {
   reconciliation_difference_eur: number;
   open_positions: number;
   asset_broker_ledgers: number;
+};
+
+type RealizedGainDetail = {
+  transaction_id: string;
+  trade_date: string;
+  asset_id: string;
+  asset_name: string;
+  asset_type: string;
+  broker_id: string;
+  broker: string;
+  sold_quantity: number;
+  quantity_before: number;
+  average_cost_before: number;
+  sale_proceeds: number;
+  released_cost_basis: number;
+  realized_gain: number;
+  realized_return: number | null;
+  fees: number;
+  tax: number;
+  calculation_currency: string;
 };
 
 type Transaction = {
@@ -355,6 +375,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [positions, setPositions] = useState<Position[]>([]);
   const [portfolioReconciliation, setPortfolioReconciliation] = useState<PortfolioReconciliation | null>(null);
+  const [realizedGains, setRealizedGains] = useState<RealizedGainDetail[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [identifiers, setIdentifiers] = useState<Identifier[]>([]);
   const [assetTags, setAssetTags] = useState<AssetTag[]>([]);
@@ -424,6 +445,7 @@ function App() {
   function clearData() {
     setPositions([]);
     setPortfolioReconciliation(null);
+    setRealizedGains([]);
     setAssets([]);
     setIdentifiers([]);
     setAssetTags([]);
@@ -448,6 +470,7 @@ function App() {
     const [
       positionsResult,
       reconciliationResult,
+      realizedGainsResult,
       assetsResult,
       identifiersResult,
       assetTagsResult,
@@ -466,6 +489,7 @@ function App() {
     ] = await Promise.all([
       supabase.from("v_open_positions").select("*").order("name"),
       supabase.from("v_portfolio_reconciliation").select("*").maybeSingle(),
+      supabase.from("v_realized_gains_detail").select("*").order("trade_date", { ascending: false }),
       supabase.from("assets").select("id,asset_type,name,isin,currency").order("name"),
       supabase.from("asset_identifiers").select("asset_id,provider,symbol,exchange,is_primary").order("symbol"),
       supabase.from("asset_tags").select("asset_id,tag,notes").order("tag"),
@@ -504,6 +528,7 @@ function App() {
     const coreError =
       positionsResult.error ||
       reconciliationResult.error ||
+      realizedGainsResult.error ||
       assetsResult.error ||
       identifiersResult.error ||
       brokersResult.error ||
@@ -518,6 +543,7 @@ function App() {
     } else {
       setPositions((positionsResult.data ?? []) as Position[]);
       setPortfolioReconciliation((reconciliationResult.data ?? null) as PortfolioReconciliation | null);
+      setRealizedGains((realizedGainsResult.data ?? []) as RealizedGainDetail[]);
       setAssets((assetsResult.data ?? []) as Asset[]);
       setIdentifiers((identifiersResult.data ?? []) as Identifier[]);
       setAssetTags(assetTagsResult.error ? [] : ((assetTagsResult.data ?? []) as AssetTag[]));
@@ -1274,6 +1300,7 @@ function App() {
         <TransactionsView
           rows={transactionRows}
           reconciliation={portfolioReconciliation}
+          realizedGains={realizedGains}
           portfolioCostBasis={totals.costBasis}
           assets={assets}
           brokers={brokers}
@@ -1691,6 +1718,7 @@ function PositionsView({
 function TransactionsView({
   rows,
   reconciliation,
+  realizedGains,
   portfolioCostBasis,
   assets,
   brokers,
@@ -1706,6 +1734,7 @@ function TransactionsView({
 }: {
   rows: Array<Transaction & { asset?: Asset; broker?: Broker }>;
   reconciliation: PortfolioReconciliation | null;
+  realizedGains: RealizedGainDetail[];
   portfolioCostBasis: number;
   assets: Asset[];
   brokers: Broker[];
@@ -1719,6 +1748,7 @@ function TransactionsView({
   setSearch: (value: string) => void;
   loading: boolean;
 }) {
+  const [section, setSection] = useState<"movements" | "realized">("movements");
   const [drafts, setDrafts] = useState<Record<string, TransactionForm>>({});
   useEffect(() => {
     setDrafts(Object.fromEntries(rows.map((row) => [row.id, transactionFormFromRow(row)])));
@@ -1732,8 +1762,21 @@ function TransactionsView({
       : acc - Math.max(0, amount - fees - tax);
   }, 0);
   const portfolioDifference = reconciliation ? portfolioCostBasis - Number(reconciliation.open_cost_basis_eur ?? 0) : 0;
+  const realizedTotal = realizedGains.reduce((acc, row) => acc + toNumber(row.realized_gain), 0);
+  const proceedsTotal = realizedGains.reduce((acc, row) => acc + toNumber(row.sale_proceeds), 0);
+  const releasedCostTotal = realizedGains.reduce((acc, row) => acc + toNumber(row.released_cost_basis), 0);
   return (
     <>
+      <SectionTabs
+        tabs={[
+          { id: "movements", label: "Movimientos" },
+          { id: "realized", label: "Ganancias realizadas" },
+        ]}
+        active={section}
+        onChange={setSection}
+      />
+      {section === "movements" && (
+        <>
       <TransactionFormPanel assets={assets} brokers={brokers} primarySymbols={primarySymbols} form={form} setForm={setForm} onSubmit={onSubmit} loading={loading} />
       <section className="panel">
         <div className="panel-header">
@@ -1818,6 +1861,39 @@ function TransactionsView({
           })}
         />
       </section>
+        </>
+      )}
+      {section === "realized" && (
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="kicker">Ventas contabilizadas</span>
+              <h2>Ganancias realizadas</h2>
+            </div>
+            <span className="status-pill good">Conciliado con Activity</span>
+          </div>
+          <div className="summary-grid compact">
+            <Metric label="P&G realizado" value={formatMoney(realizedTotal)} tone={realizedTotal >= 0 ? "good" : "bad"} />
+            <Metric label="Cobros netos de ventas" value={formatMoney(proceedsTotal)} />
+            <Metric label="Coste descargado" value={formatMoney(releasedCostTotal)} />
+            <Metric label="Ventas" value={realizedGains.length} />
+          </div>
+          <SimpleTable
+            columns={["Fecha", "Ticker", "Activo", "Broker", "Cantidad", "Cobro neto", "Coste descargado", "P&G realizado", "Rentabilidad"]}
+            rows={realizedGains.map((row) => [
+              new Date(`${row.trade_date}T12:00:00`).toLocaleDateString("es-ES"),
+              primarySymbols.get(row.asset_id) ?? "",
+              row.asset_name,
+              row.broker,
+              formatNumber(row.sold_quantity),
+              formatMoney(row.sale_proceeds),
+              formatMoney(row.released_cost_basis),
+              <span className={toNumber(row.realized_gain) >= 0 ? "good" : "bad"}>{formatMoney(row.realized_gain)}</span>,
+              <span className={toNumber(row.realized_return) >= 0 ? "good" : "bad"}>{formatPercent(row.realized_return)}</span>,
+            ])}
+          />
+        </section>
+      )}
     </>
   );
 }
@@ -3434,6 +3510,9 @@ function VirtualPortfoliosView({
   const [newName, setNewName] = useState("");
   const [newStrategyId, setNewStrategyId] = useState(strategies[0]?.id ?? "");
   const [drafts, setDrafts] = useState<Record<string, { portfolioId: string; targetWeight: string; notes: string }>>({});
+  const [simulatedPortfolioId, setSimulatedPortfolioId] = useState(virtualPortfolios[0]?.id ?? "");
+  const [simulatedAmount, setSimulatedAmount] = useState("500");
+  const [simulatedMaxPurchases, setSimulatedMaxPurchases] = useState("3");
 
   useEffect(() => {
     setDrafts(
@@ -3452,6 +3531,12 @@ function VirtualPortfoliosView({
       )
     );
   }, [positions, assignments]);
+
+  useEffect(() => {
+    if (!virtualPortfolios.some((portfolio) => portfolio.id === simulatedPortfolioId)) {
+      setSimulatedPortfolioId(virtualPortfolios[0]?.id ?? "");
+    }
+  }, [virtualPortfolios, simulatedPortfolioId]);
 
   const strategyById = useMemo(() => new Map(strategies.map((strategy) => [strategy.id, strategy])), [strategies]);
   const dividendsByPosition = useMemo(() => {
@@ -3474,6 +3559,63 @@ function VirtualPortfoliosView({
     const accumulatedDividends = [...memberKeys].reduce((acc, key) => acc + (dividendsByPosition.get(key) ?? 0), 0);
     return { portfolio, members, marketValue, costBasis, latentGain: marketValue - costBasis, accumulatedDividends };
   });
+  const contributionPlan = useMemo(() => {
+    const amount = Math.max(0, parseLocaleNumber(simulatedAmount));
+    const maxPurchases = Math.max(1, Math.min(50, Math.trunc(toNumber(simulatedMaxPurchases) || 1)));
+    const members = assignments
+      .filter((assignment) => assignment.virtual_portfolio_id === simulatedPortfolioId)
+      .map((assignment) => ({
+        assignment,
+        position: positions.find((position) => position.asset_id === assignment.asset_id && position.broker_id === assignment.broker_id),
+      }))
+      .filter((row): row is { assignment: VirtualPortfolioAssignment; position: (typeof positions)[number] } => Boolean(row.position));
+    if (!members.length) return { rows: [], amount, totalBefore: 0, totalAfter: amount, usesEqualWeights: false };
+
+    const explicitTotal = members.reduce((acc, row) => acc + Math.max(0, toNumber(row.assignment.target_weight)), 0);
+    const missingTargets = members.filter((row) => !(toNumber(row.assignment.target_weight) > 0));
+    const fallbackTarget = explicitTotal === 0
+      ? 1 / members.length
+      : missingTargets.length
+        ? Math.max(0, 1 - explicitTotal) / missingTargets.length
+        : 0;
+    const rawTargets = members.map((row) =>
+      toNumber(row.assignment.target_weight) > 0 ? toNumber(row.assignment.target_weight) : fallbackTarget
+    );
+    const rawTargetTotal = rawTargets.reduce((acc, value) => acc + value, 0);
+    const targets = rawTargets.map((value) => rawTargetTotal > 0 ? value / rawTargetTotal : 1 / members.length);
+    const totalBefore = members.reduce((acc, row) => acc + row.position.marketValue, 0);
+    const totalAfter = totalBefore + amount;
+    const candidates = members
+      .map((row, index) => ({
+        ...row,
+        targetWeight: targets[index],
+        deficit: Math.max(0, targets[index] * totalAfter - row.position.marketValue),
+      }))
+      .sort((left, right) => right.deficit - left.deficit)
+      .slice(0, Math.min(maxPurchases, members.length));
+    const deficitTotal = candidates.reduce((acc, row) => acc + row.deficit, 0);
+    const chosenTargetTotal = candidates.reduce((acc, row) => acc + row.targetWeight, 0);
+    const rows = candidates.map((row) => {
+      const allocation = amount <= 0
+        ? 0
+        : deficitTotal >= amount && deficitTotal > 0
+          ? amount * row.deficit / deficitTotal
+          : row.deficit + Math.max(0, amount - deficitTotal) * (chosenTargetTotal > 0 ? row.targetWeight / chosenTargetTotal : 1 / candidates.length);
+      const postValue = row.position.marketValue + allocation;
+      return {
+        key: `${row.position.asset_id}:${row.position.broker_id}`,
+        symbol: row.position.symbol,
+        name: row.position.name,
+        broker: row.position.broker,
+        currentValue: row.position.marketValue,
+        currentWeight: totalBefore > 0 ? row.position.marketValue / totalBefore : 0,
+        targetWeight: row.targetWeight,
+        allocation,
+        postWeight: totalAfter > 0 ? postValue / totalAfter : 0,
+      };
+    });
+    return { rows, amount, totalBefore, totalAfter, usesEqualWeights: explicitTotal === 0 };
+  }, [assignments, positions, simulatedAmount, simulatedMaxPurchases, simulatedPortfolioId]);
 
   return (
     <>
@@ -3502,6 +3644,60 @@ function VirtualPortfoliosView({
             </article>
           );
         })}
+      </section>
+      <section className="panel contribution-planner">
+        <div className="panel-header">
+          <div>
+            <span className="kicker">Aportacion dirigida</span>
+            <h2>Donde invertir una nueva aportacion</h2>
+            <p className="muted">Prioriza las posiciones mas infraponderadas y limita el numero de compras.</p>
+          </div>
+        </div>
+        <div className="form-row contribution-controls">
+          <label>
+            Cartera
+            <select value={simulatedPortfolioId} onChange={(event) => setSimulatedPortfolioId(event.target.value)}>
+              {virtualPortfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}
+            </select>
+          </label>
+          <label>
+            Aportacion EUR
+            <input value={simulatedAmount} onChange={(event) => setSimulatedAmount(event.target.value)} inputMode="decimal" />
+          </label>
+          <label>
+            Maximo de compras
+            <input type="number" min="1" max="50" value={simulatedMaxPurchases} onChange={(event) => setSimulatedMaxPurchases(event.target.value)} />
+          </label>
+        </div>
+        <div className="summary-grid compact">
+          <Metric label="Aportacion" value={formatMoney(contributionPlan.amount)} />
+          <Metric label="Compras propuestas" value={contributionPlan.rows.length} />
+          <Metric label="Cartera antes" value={formatMoney(contributionPlan.totalBefore)} />
+          <Metric label="Cartera despues" value={formatMoney(contributionPlan.totalAfter)} />
+        </div>
+        {contributionPlan.rows.length ? (
+          <SimpleTable
+            columns={["Ticker", "Activo", "Broker", "Valor actual", "Peso actual", "Peso objetivo", "Comprar", "Peso posterior"]}
+            rows={contributionPlan.rows.map((row) => [
+              row.symbol,
+              row.name,
+              row.broker,
+              formatMoney(row.currentValue),
+              formatPercent(row.currentWeight),
+              formatPercent(row.targetWeight),
+              <strong className="allocation-amount">{formatMoney(row.allocation)}</strong>,
+              formatPercent(row.postWeight),
+            ])}
+          />
+        ) : (
+          <p className="empty">Asigna posiciones a esta cartera para calcular la aportacion.</p>
+        )}
+        <p className="reconciliation-note">
+          {contributionPlan.usesEqualWeights
+            ? "No hay pesos objetivo informados: se usa un objetivo equitativo entre las posiciones asignadas."
+            : "Los pesos objetivo se normalizan al 100 %. Las posiciones sin objetivo reciben el peso restante de forma equitativa."}
+          {" "}Los importes son una propuesta matematica previa a redondeos, comisiones y participaciones disponibles.
+        </p>
       </section>
       <form
         className="panel form-panel"
@@ -3570,6 +3766,77 @@ function VirtualPortfoliosView({
   );
 }
 
+function collectStoredReportText(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(collectStoredReportText);
+  if (!value || typeof value !== "object") return [];
+  const row = value as Record<string, unknown>;
+  if (row.type === "output_text" && typeof row.text === "string") return [row.text];
+  if (typeof row.output_text === "string") return [row.output_text];
+  return [...collectStoredReportText(row.content), ...collectStoredReportText(row.output)];
+}
+
+function normalizeReportMarkdown(content: string) {
+  const trimmed = content.trim();
+  if (!trimmed || (!trimmed.startsWith("[") && !trimmed.startsWith("{"))) return trimmed;
+  try {
+    const extracted = collectStoredReportText(JSON.parse(trimmed)).filter(Boolean).join("\n\n");
+    return extracted || trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+function InlineReportText({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean).map((part, index) => {
+        if (part.startsWith("**") && part.endsWith("**")) return <strong key={index}>{part.slice(2, -2)}</strong>;
+        if (part.startsWith("`") && part.endsWith("`")) return <code key={index}>{part.slice(1, -1)}</code>;
+        return <span key={index}>{part}</span>;
+      })}
+    </>
+  );
+}
+
+function ReportDocument({ content }: { content: string }) {
+  const lines = normalizeReportMarkdown(content).split(/\r?\n/);
+  const blocks: ReactNode[] = [];
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index].trim();
+    if (!line) {
+      index += 1;
+      continue;
+    }
+    const heading = /^(#{1,4})\s+(.+)$/.exec(line);
+    if (heading) {
+      const level = Math.min(4, heading[1].length + 1);
+      const Heading = `h${level}` as keyof JSX.IntrinsicElements;
+      blocks.push(<Heading key={`h-${index}`}><InlineReportText text={heading[2]} /></Heading>);
+      index += 1;
+      continue;
+    }
+    if (/^[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^[-*]\s+/, ""));
+        index += 1;
+      }
+      blocks.push(<ul key={`ul-${index}`}>{items.map((item, itemIndex) => <li key={itemIndex}><InlineReportText text={item} /></li>)}</ul>);
+      continue;
+    }
+    const paragraph = [line];
+    index += 1;
+    while (index < lines.length) {
+      const next = lines[index].trim();
+      if (!next || /^(#{1,4})\s+/.test(next) || /^[-*]\s+/.test(next)) break;
+      paragraph.push(next);
+      index += 1;
+    }
+    blocks.push(<p key={`p-${index}`}><InlineReportText text={paragraph.join(" ")} /></p>);
+  }
+  return <div className="report-document">{blocks}</div>;
+}
+
 function ReportsView({
   reports,
   onGenerateReport,
@@ -3618,16 +3885,16 @@ function ReportsView({
           {reports.length === 0 ? (
             <p className="empty">Sin informes todavia.</p>
           ) : (
-            reports.map((report) => (
-              <article className="report-card" key={report.id}>
-                <header>
+            reports.map((report, index) => (
+              <details className="report-card" key={report.id} open={index === 0}>
+                <summary>
                   <strong>{report.title}</strong>
                   <span>
                     {reportTypeLabel(report.report_type)} - {new Date(report.created_at).toLocaleString("es-ES")}
                   </span>
-                </header>
-                <pre>{report.content_markdown}</pre>
-              </article>
+                </summary>
+                <ReportDocument content={report.content_markdown} />
+              </details>
             ))
           )}
         </div>

@@ -1666,27 +1666,84 @@ tfoot th {
   padding: 13px;
 }
 
-.report-card header {
+.report-card > summary {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
+  cursor: pointer;
+  list-style: none;
 }
 
-.report-card header span {
+.report-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.report-card > summary::after {
+  content: "+";
+  color: var(--blue);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.report-card[open] > summary::after {
+  content: "-";
+}
+
+.report-card > summary span {
   color: #657184;
   font-size: 12px;
 }
 
-.report-card pre {
-  max-height: 360px;
+.report-document {
+  max-height: 520px;
   overflow: auto;
-  margin: 0;
-  white-space: pre-wrap;
+  padding: 14px 4px 2px;
+  border-top: 1px solid var(--line-soft);
   color: #293241;
-  font-family: inherit;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.6;
+}
+
+.report-document h2,
+.report-document h3,
+.report-document h4 {
+  margin: 18px 0 8px;
+  letter-spacing: 0;
+}
+
+.report-document h2:first-child,
+.report-document h3:first-child {
+  margin-top: 0;
+}
+
+.report-document p,
+.report-document ul {
+  margin: 0 0 12px;
+}
+
+.report-document ul {
+  padding-left: 22px;
+}
+
+.report-document code {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.contribution-planner .contribution-controls {
+  padding: 16px 18px 4px;
+}
+
+.contribution-planner .summary-grid {
+  margin-top: 12px;
+}
+
+.allocation-amount {
+  color: var(--blue);
+  font-size: 14px;
 }
 
 .queue-list {

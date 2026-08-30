@@ -533,7 +533,16 @@ async function callOpenAIReport(reportType: string, prompt: string) {
   });
   if (!response.ok) throw new Error(`OpenAI ${response.status}: ${await response.text()}`);
   const data = await response.json();
-  return asString(data.output_text) || JSON.stringify(data.output || "").slice(0, 6000);
+  const directText = asString(data.output_text);
+  if (directText) return directText;
+  const outputText = ((data.output as Dict[]) || [])
+    .flatMap((item) => ((item.content as Dict[]) || []))
+    .filter((item) => item.type === "output_text")
+    .map((item) => asString(item.text))
+    .filter(Boolean)
+    .join("\n\n");
+  if (!outputText) throw new Error(`OpenAI no devolvio texto para ${reportType}`);
+  return outputText;
 }
 
 async function generateReport(payload: Dict) {
