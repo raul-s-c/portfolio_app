@@ -632,6 +632,57 @@ async function yahooPriceHistory(symbol: string, years: number) {
     .filter((row: Dict) => Number(row.close_price) > 0);
 }
 
+async function ocuFundHistory(slug: string, years: number, currency = "EUR") {
+  const sourceUrl = `https://www.ocu.org/inversiones/invertir/fondos/${encodeURIComponent(slug)}`;
+  const response = await fetch(sourceUrl, {
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "User-Agent": "Mozilla/5.0 PortfolioFundNav/1.0",
+    },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const html = await response.text();
+  if (!response.ok) throw new Error(`OCU ${slug} ${response.status}: ${html.slice(0, 240)}`);
+
+  const minimumDate = new Date();
+  minimumDate.setUTCFullYear(minimumDate.getUTCFullYear() - Math.max(1, Math.min(20, years)));
+  const minimumDateText = minimumDate.toISOString().slice(0, 10);
+  const byDate = new Map<string, number>();
+  const navPattern = /\\?"(\d{4}-\d{2}-\d{2})T00:00:00\\?"\s*:\s*(-?\d+(?:\.\d+)?)/g;
+  for (const match of html.matchAll(navPattern)) {
+    const pricedOn = match[1];
+    const closePrice = Number(match[2]);
+    if (pricedOn >= minimumDateText && Number.isFinite(closePrice) && closePrice > 0) {
+      byDate.set(pricedOn, closePrice);
+    }
+  }
+  const rows = [...byDate.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([priced_on, close_price]) => ({
+      priced_on,
+      close_price,
+      currency: normalizeCurrency(currency),
+      provider: "ocu",
+      raw_payload: { source_url: sourceUrl, slug },
+    }));
+  if (!rows.length) throw new Error(`OCU ${slug} no devolvio historico NAV`);
+  return rows;
+}
+
+async function ocuFundCurrentQuote(slug: string, currency = "EUR") {
+  const history = await ocuFundHistory(slug, 1, currency);
+  const latest = history[history.length - 1];
+  const previous = history.length > 1 ? history[history.length - 2] : null;
+  return {
+    price: Number(latest.close_price),
+    previous_close: previous ? Number(previous.close_price) : null,
+    currency: normalizeCurrency(latest.currency),
+    provider: "ocu",
+    priced_on: String(latest.priced_on),
+    raw_payload: latest.raw_payload,
+  };
+}
+
 async function yahooCurrentQuote(symbol: string) {
   const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`);
   url.searchParams.set("range", "2d");
@@ -673,12 +724,34 @@ async function yahooFxToEur(currency: string) {
 async function loadPriceIdentifiers(maxAssets: number) {
   const positions = (await supabaseRest(`v_open_positions?select=asset_id,name,asset_type&order=market_value.desc&limit=${maxAssets}`)) as Dict[];
   const assetIds = uniqueTerms(positions.map((row) => row.asset_id), maxAssets);
-  const assets = assetIds.map((assetId) => positions.find((row) => String(row.asset_id) === assetId) || { asset_id: assetId });
+  const assetRows = assetIds.length
+    ? (await supabaseRest(`assets?select=id,name,asset_type,currency,isin&id=in.(${inList(assetIds)})`)) as Dict[]
+    : [];
+  const assets = assetIds.map((assetId) => {
+    const asset = assetRows.find((row) => String(row.id) === assetId);
+    const position = positions.find((row) => String(row.asset_id) === assetId);
+    return { ...(position || {}), ...(asset || {}), asset_id: assetId };
+  });
   if (!assetIds.length) return { assetIds, assets, identifiers: [] as Dict[] };
   const identifiers = (await supabaseRest(
     `asset_identifiers?select=asset_id,provider,symbol,exchange,is_primary,valid_to&asset_id=in.(${inList(assetIds)})`,
   )) as Dict[];
   return { assetIds, assets, identifiers };
+}
+
+function fundSourcesForAsset(assetId: string, identifiers: Dict[]) {
+  const today = new Date().toISOString().slice(0, 10);
+  return uniqueTerms(
+    identifiers
+      .filter(
+        (row) =>
+          String(row.asset_id) === assetId &&
+          row.provider === "ocu" &&
+          (!row.valid_to || String(row.valid_to) >= today),
+      )
+      .map((row) => row.symbol),
+    4,
+  );
 }
 
 function priceSymbolsForAsset(assetId: string, identifiers: Dict[]) {
@@ -735,7 +808,33 @@ async function refreshCurrentPrices(payload: Dict) {
   const skipped = [];
   for (const assetId of assetIds) {
     const asset = assets.find((row) => String(row.asset_id) === assetId) || {};
+    const fundSources = fundSourcesForAsset(assetId, identifiers);
     const symbols = priceSymbolsForAsset(assetId, identifiers);
+    if (asset.asset_type === "fund" && fundSources.length) {
+      try {
+        const quote = await ocuFundCurrentQuote(fundSources[0], asString(asset.currency) || "EUR");
+        const toEur = await yahooFxToEur(quote.currency);
+        rows.push({
+          asset_id: assetId,
+          priced_at: `${quote.priced_on}T12:00:00.000Z`,
+          price: quote.price,
+          previous_close: quote.previous_close,
+          currency: quote.currency,
+          provider: quote.provider,
+          raw_payload: { ...quote.raw_payload, to_eur: toEur, resolved_symbol: fundSources[0] },
+        });
+      } catch (error) {
+        errors.push({
+          asset_id: assetId,
+          name: asset.name,
+          asset_type: asset.asset_type,
+          stage: "current",
+          sources: fundSources,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      continue;
+    }
     if (!symbols.length) {
       if (asset.asset_type === "fund") {
         skipped.push({ asset_id: assetId, name: asset.name, asset_type: asset.asset_type, stage: "current", reason: "Valor liquidativo manual" });
@@ -768,9 +867,9 @@ async function refreshCurrentPrices(payload: Dict) {
     }
   }
   if (rows.length) {
-    await supabaseRest("price_snapshots", {
+    await supabaseRest("price_snapshots?on_conflict=asset_id,priced_at,provider", {
       method: "POST",
-      headers: { Prefer: "return=minimal" },
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify(rows),
     });
   }
@@ -787,7 +886,28 @@ async function refreshPriceHistory(payload: Dict) {
   const skipped = [];
   for (const assetId of assetIds) {
     const asset = assets.find((row) => String(row.asset_id) === assetId) || {};
+    const fundSources = fundSourcesForAsset(assetId, identifiers);
     const symbols = priceSymbolsForAsset(assetId, identifiers);
+    if (asset.asset_type === "fund" && fundSources.length) {
+      try {
+        const history = await ocuFundHistory(fundSources[0], years, asString(asset.currency) || "EUR");
+        rows.push(...history.map((row: Dict) => ({
+          ...row,
+          asset_id: assetId,
+          raw_payload: { ...(row.raw_payload as Dict), resolved_symbol: fundSources[0] },
+        })));
+      } catch (error) {
+        errors.push({
+          asset_id: assetId,
+          name: asset.name,
+          asset_type: asset.asset_type,
+          stage: "history",
+          sources: fundSources,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      continue;
+    }
     if (!symbols.length) {
       if (asset.asset_type === "fund") {
         skipped.push({ asset_id: assetId, name: asset.name, asset_type: asset.asset_type, stage: "history", reason: "Valor liquidativo manual" });

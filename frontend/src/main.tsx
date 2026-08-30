@@ -1166,6 +1166,7 @@ function App() {
         symbol: primarySymbols.get(row.asset_id) ?? row.name,
         costBasis: Number(row.cost_basis_naive ?? 0),
         marketValue: Number(row.market_value ?? 0),
+        hasMarketValue: row.market_value != null && row.price != null,
         dailyGain: Number(row.daily_gain ?? 0),
         latentGain: Number(row.market_value ?? 0) - Number(row.cost_basis_naive ?? 0),
       })),
@@ -1502,7 +1503,7 @@ function DashboardView({
   onGenerateReport,
   generatingReportType,
 }: {
-  positions: Array<Position & { symbol: string; marketValue: number; costBasis: number; latentGain: number; dailyGain: number }>;
+  positions: Array<Position & { symbol: string; marketValue: number; hasMarketValue: boolean; costBasis: number; latentGain: number; dailyGain: number }>;
   totals: { marketValue: number; costBasis: number; dailyGain: number; dividendsNet: number; latentGain: number };
   queueCount: number;
   onRefresh: () => void;
@@ -3620,7 +3621,7 @@ function VirtualPortfoliosView({
   onCreatePortfolio,
   onSaveAssignment,
 }: {
-  positions: Array<Position & { symbol: string; marketValue: number; costBasis: number; latentGain: number; dailyGain: number }>;
+  positions: Array<Position & { symbol: string; marketValue: number; hasMarketValue: boolean; costBasis: number; latentGain: number; dailyGain: number }>;
   strategies: PortfolioStrategy[];
   virtualPortfolios: VirtualPortfolio[];
   assignments: VirtualPortfolioAssignment[];
@@ -3690,7 +3691,15 @@ function VirtualPortfoliosView({
         position: positions.find((position) => position.asset_id === assignment.asset_id && position.broker_id === assignment.broker_id),
       }))
       .filter((row): row is { assignment: VirtualPortfolioAssignment; position: (typeof positions)[number] } => Boolean(row.position));
-    if (!members.length) return { rows: [], amount, totalBefore: 0, totalAfter: amount, usesEqualWeights: false };
+    if (!members.length) return { rows: [], amount, totalBefore: 0, totalAfter: amount, usesEqualWeights: false, missingValuations: [] as string[] };
+
+    const missingValuations = members
+      .filter((row) => !row.position.hasMarketValue)
+      .map((row) => `${row.position.symbol} · ${row.position.broker}`);
+    const totalBefore = members.reduce((acc, row) => acc + row.position.marketValue, 0);
+    if (missingValuations.length) {
+      return { rows: [], amount, totalBefore, totalAfter: totalBefore + amount, usesEqualWeights: false, missingValuations };
+    }
 
     const explicitTotal = members.reduce((acc, row) => acc + Math.max(0, toNumber(row.assignment.target_weight)), 0);
     const missingTargets = members.filter((row) => !(toNumber(row.assignment.target_weight) > 0));
@@ -3704,7 +3713,6 @@ function VirtualPortfoliosView({
     );
     const rawTargetTotal = rawTargets.reduce((acc, value) => acc + value, 0);
     const targets = rawTargets.map((value) => rawTargetTotal > 0 ? value / rawTargetTotal : 1 / members.length);
-    const totalBefore = members.reduce((acc, row) => acc + row.position.marketValue, 0);
     const totalAfter = totalBefore + amount;
     const candidates = members
       .map((row, index) => ({
@@ -3735,7 +3743,7 @@ function VirtualPortfoliosView({
         postWeight: totalAfter > 0 ? postValue / totalAfter : 0,
       };
     });
-    return { rows, amount, totalBefore, totalAfter, usesEqualWeights: explicitTotal === 0 };
+    return { rows, amount, totalBefore, totalAfter, usesEqualWeights: explicitTotal === 0, missingValuations };
   }, [assignments, positions, simulatedAmount, simulatedMaxPurchases, simulatedPortfolioId]);
 
   return (
@@ -3793,12 +3801,12 @@ function VirtualPortfoliosView({
         <div className="summary-grid compact">
           <Metric label="Aportacion" value={formatMoney(contributionPlan.amount)} />
           <Metric label="Compras propuestas" value={contributionPlan.rows.length} />
-          <Metric label="Cartera antes" value={formatMoney(contributionPlan.totalBefore)} />
+          <Metric label="Valor mercado actual" value={formatMoney(contributionPlan.totalBefore)} />
           <Metric label="Cartera despues" value={formatMoney(contributionPlan.totalAfter)} />
         </div>
         {contributionPlan.rows.length ? (
           <SimpleTable
-            columns={["Ticker", "Activo", "Broker", "Valor actual", "Peso actual", "Peso objetivo", "Comprar", "Peso posterior"]}
+            columns={["Ticker", "Activo", "Broker", "Valor mercado actual", "Peso actual", "Peso objetivo", "Comprar", "Peso posterior"]}
             rows={contributionPlan.rows.map((row) => [
               row.symbol,
               row.name,
@@ -3810,6 +3818,10 @@ function VirtualPortfoliosView({
               formatPercent(row.postWeight),
             ])}
           />
+        ) : contributionPlan.missingValuations.length ? (
+          <p className="message">
+            No se genera propuesta porque faltan valores actuales: {contributionPlan.missingValuations.join(", ")}.
+          </p>
         ) : (
           <p className="empty">Asigna posiciones a esta cartera para calcular la aportacion.</p>
         )}
@@ -3817,7 +3829,7 @@ function VirtualPortfoliosView({
           {contributionPlan.usesEqualWeights
             ? "No hay pesos objetivo informados: se usa un objetivo equitativo entre las posiciones asignadas."
             : "Los pesos objetivo se normalizan al 100 %. Las posiciones sin objetivo reciben el peso restante de forma equitativa."}
-          {" "}Los importes son una propuesta matematica previa a redondeos, comisiones y participaciones disponibles.
+          {" "}La base es siempre el valor de mercado actual de cada posicion; la aportacion solo se suma para calcular el peso posterior. Los importes son una propuesta matematica previa a redondeos, comisiones y participaciones disponibles.
         </p>
       </section>
       <form
