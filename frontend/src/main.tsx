@@ -251,6 +251,7 @@ type DividendForm = {
 
 type TotalColumn = number | { index: number; format?: "money" | "number" | "percent" };
 type CashSection = "month" | "objectives" | "annualPlan" | "annualAccounts";
+type DashboardSection = "executive" | "allocation" | "positions" | "etf";
 type DividendSection = "analysis" | "evolution" | "assets" | "edit";
 type WealthSection = "period" | "chart" | "history";
 type DividendAggregate = { name: string; gross: number; tax: number; net: number; count: number; weight: number };
@@ -276,16 +277,18 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "backup", label: "Backup" },
 ];
 
-const PRIMARY_NAV: Array<{ id: TabId; label: string }> = [
-  { id: "dashboard", label: "Overview" },
-  { id: "positions", label: "Holdings" },
-  { id: "snapshots", label: "Performance" },
-  { id: "virtualPortfolios", label: "Allocation" },
-  { id: "dividendCalendar", label: "Income" },
-  { id: "transactions", label: "Transactions" },
-  { id: "queue", label: "Watchlist" },
-  { id: "reports", label: "Reports" },
+type NavGroupId = "overview" | "portfolio" | "income" | "activity" | "planning" | "reports";
+
+const NAV_GROUPS: Array<{ id: NavGroupId; label: string; defaultTab: TabId; tabs: TabId[] }> = [
+  { id: "overview", label: "Overview", defaultTab: "dashboard", tabs: ["dashboard"] },
+  { id: "portfolio", label: "Portfolio", defaultTab: "positions", tabs: ["positions", "virtualPortfolios", "assets", "etf"] },
+  { id: "income", label: "Income", defaultTab: "dividends", tabs: ["dividends", "dividendCalendar"] },
+  { id: "activity", label: "Activity", defaultTab: "transactions", tabs: ["transactions", "queue", "importer"] },
+  { id: "planning", label: "Planning", defaultTab: "cash", tabs: ["cash", "property", "wealth", "snapshots"] },
+  { id: "reports", label: "Reports", defaultTab: "reports", tabs: ["reports", "backup"] },
 ];
+
+const tabLabelById = new Map(TABS.map((tab) => [tab.id, tab.label]));
 
 const DEFAULT_ASSET_FORM: AssetForm = {
   name: "",
@@ -975,6 +978,30 @@ function App() {
     await loadDashboardData();
   }
 
+  async function updateQueueItem(id: string, patch: Partial<ResolutionQueueItem>) {
+    if (!session) {
+      setMessage("Entra con tu email antes de editar pendientes.");
+      return;
+    }
+    const { error } = await supabase
+      .from("asset_resolution_queue")
+      .update({
+        raw_name: patch.raw_name ?? null,
+        symbol: patch.symbol ? cleanSymbol(patch.symbol) : null,
+        isin: patch.isin?.trim().toUpperCase() || null,
+        broker: patch.broker?.trim() || null,
+        status: patch.status ?? "pending",
+        notes: patch.notes?.trim() || null,
+      })
+      .eq("id", id);
+    if (error) {
+      setMessage(friendlySupabaseError(error.message));
+      return;
+    }
+    setMessage("Pendiente actualizado.");
+    await loadDashboardData();
+  }
+
   function exportBackup() {
     const backup = {
       exported_at: new Date().toISOString(),
@@ -1080,33 +1107,22 @@ function App() {
   const cash = legacyAppState?.cash;
   const wealthSummary = legacyAppState?.wealth_summary ?? [];
   const wealthRows = legacyAppState?.wealth_rows ?? [];
+  const activeGroup = NAV_GROUPS.find((group) => group.tabs.includes(activeTab)) ?? NAV_GROUPS[0];
+  const activeSubtabs = activeGroup.tabs.map((tab) => ({ id: tab, label: tabLabelById.get(tab) ?? tab }));
 
   return (
     <main className="app-shell">
-      <header className={`topbar ${activeTab === "dividendCalendar" ? "topbar-flush" : ""}`}>
+      <header className={`topbar ${activeSubtabs.length > 1 || activeTab === "dividendCalendar" ? "topbar-flush" : ""}`}>
         <div className="brand-lockup">
           <p className="eyebrow">Portfolio App</p>
           <h1>Cartera privada</h1>
         </div>
         <nav className="tabs" aria-label="Vistas de cartera">
-          {PRIMARY_NAV.map((tab) => (
-            <button key={tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => setActiveTab(tab.id)}>
-              {tab.label}
+          {NAV_GROUPS.map((group) => (
+            <button key={group.id} className={activeGroup.id === group.id ? "active" : ""} onClick={() => setActiveTab(group.defaultTab)}>
+              {group.label}
             </button>
           ))}
-          <select
-            className={!PRIMARY_NAV.some((tab) => tab.id === activeTab) ? "active" : ""}
-            aria-label="Mas vistas"
-            value={!PRIMARY_NAV.some((tab) => tab.id === activeTab) ? activeTab : ""}
-            onChange={(event) => event.target.value && setActiveTab(event.target.value as TabId)}
-          >
-            <option value="">Mas</option>
-            {TABS.filter((tab) => !PRIMARY_NAV.some((primary) => primary.id === tab.id)).map((tab) => (
-              <option key={tab.id} value={tab.id}>
-                {tab.label}
-              </option>
-            ))}
-          </select>
         </nav>
         <div className="login-box">
           {session ? (
@@ -1129,6 +1145,14 @@ function App() {
           )}
         </div>
       </header>
+      {activeSubtabs.length > 1 && (
+        <SectionTabs
+          className="app-subtabs"
+          tabs={activeSubtabs}
+          active={activeTab}
+          onChange={(tab) => setActiveTab(tab)}
+        />
+      )}
 
       {activeTab !== "dividendCalendar" && (
         <section className="summary-grid">
@@ -1292,7 +1316,7 @@ function App() {
       {activeTab === "reports" && (
         <ReportsView reports={reports} onGenerateReport={generateReport} generatingReportType={generatingReportType} />
       )}
-      {activeTab === "queue" && <QueueView queue={queue} />}
+      {activeTab === "queue" && <QueueView queue={queue} onUpdate={updateQueueItem} loading={loading} />}
       {activeTab === "backup" && (
         <BackupView
           onExport={exportBackup}
@@ -1336,11 +1360,13 @@ function DashboardView({
   onGenerateReport: (type: ReportType) => void;
   generatingReportType: ReportType | "";
 }) {
+  const [section, setSection] = useState<DashboardSection>("executive");
   const byType = groupPositions(positions, (row) => assetTypeLabel(row.asset_type));
   const byBroker = groupPositions(positions, (row) => row.broker);
   const byCurrency = groupPositions(positions, (row) => row.price_currency ?? "EUR");
   const etfPositions = positions.filter((row) => row.asset_type === "etf");
   const etfTotal = etfPositions.reduce((acc, row) => acc + row.marketValue, 0);
+  const topDrift = [...positions].sort((a, b) => Math.abs(b.latentGain) - Math.abs(a.latentGain)).slice(0, 5);
   return (
     <>
       <section className="command-center">
@@ -1358,9 +1384,21 @@ function DashboardView({
           </button>
         </div>
       </section>
+      <SectionTabs
+        tabs={[
+          { id: "executive", label: "Resumen" },
+          { id: "allocation", label: "Asignacion" },
+          { id: "positions", label: "Posiciones" },
+          { id: "etf", label: "ETF" },
+        ]}
+        active={section}
+        onChange={setSection}
+      />
+      {section === "executive" && (
+        <>
       <section className="panel">
         <div className="panel-header">
-          <h2>Vista general</h2>
+          <h2>Resumen ejecutivo</h2>
           <button onClick={onRefresh} disabled={loading}>
             {loading ? "Cargando" : "Actualizar"}
           </button>
@@ -1372,11 +1410,37 @@ function DashboardView({
           <Metric label="Pendiente resolver" value={queueCount} />
         </div>
       </section>
-      <section className="three-grid">
-        <AllocationPanel title="Asignacion por tipo" rows={byType} />
-        <AllocationPanel title="Asignacion por broker" rows={byBroker} />
-        <AllocationPanel title="Exposicion por moneda" rows={byCurrency} />
-      </section>
+          <section className="overview-grid">
+            <AllocationPanel title="Asignacion por tipo" rows={byType} />
+            <section className="panel">
+              <div className="panel-header">
+                <h2>Mayores impactos</h2>
+                <span className="muted-inline">P&G latente</span>
+              </div>
+              <div className="impact-list">
+                {topDrift.map((row) => (
+                  <article key={`${row.asset_id}-${row.broker_id}`}>
+                    <span>
+                      <b>{row.symbol || row.name}</b>
+                      <em>{row.broker}</em>
+                    </span>
+                    <strong className={row.latentGain >= 0 ? "good" : "bad"}>{formatMoney(row.latentGain)}</strong>
+                  </article>
+                ))}
+              </div>
+            </section>
+            <AllocationPanel title="Exposicion por moneda" rows={byCurrency} />
+          </section>
+        </>
+      )}
+      {section === "allocation" && (
+        <section className="three-grid">
+          <AllocationPanel title="Asignacion por tipo" rows={byType} />
+          <AllocationPanel title="Asignacion por broker" rows={byBroker} />
+          <AllocationPanel title="Exposicion por moneda" rows={byCurrency} />
+        </section>
+      )}
+      {section === "positions" && (
       <section className="panel">
         <h2>Todas las posiciones</h2>
         <SimpleTable
@@ -1392,6 +1456,8 @@ function DashboardView({
           ])}
         />
       </section>
+      )}
+      {section === "etf" && (
       <section className="panel">
         <h2>Resumen ETF</h2>
         <SimpleTable
@@ -1407,6 +1473,7 @@ function DashboardView({
           ])}
         />
       </section>
+      )}
     </>
   );
 }
@@ -1704,21 +1771,47 @@ function DividendsView({
 }) {
   const [drafts, setDrafts] = useState<Record<string, DividendForm>>({});
   const [section, setSection] = useState<DividendSection>("analysis");
+  const [globalFilters, setGlobalFilters] = useState({ year: "", broker: "", currency: "", asset: "" });
   useEffect(() => {
     setDrafts(Object.fromEntries(rows.map((row) => [row.id, dividendFormFromRow(row)])));
   }, [rows]);
-  const totalNet = rows.reduce((acc, row) => acc + toNumber(row.net_amount ?? 0), 0);
-  const totalGross = rows.reduce((acc, row) => acc + toNumber(row.gross_amount ?? 0), 0);
-  const totalTax = rows.reduce((acc, row) => acc + toNumber(row.tax ?? 0), 0);
-  const monthlyRows = dividendMonthlyRows(rows);
-  const yearlyRows = aggregateDividends(rows, (row) => {
+  const dividendAssetKey = (row: Dividend & { asset?: Asset }) =>
+    `${primarySymbols.get(row.asset_id) ?? ""} ${row.asset?.name ?? ""}`.trim() || "Sin activo";
+  const availableYears = [
+    ...new Set(
+      rows
+        .map((row) => {
+          const date = parseDate(row.pay_date);
+          return date ? String(date.getFullYear()) : "";
+        })
+        .filter(Boolean)
+    ),
+  ].sort((a, b) => b.localeCompare(a));
+  const availableBrokers = [...new Set(rows.map((row) => row.broker?.name ?? "Sin broker"))].sort();
+  const availableCurrencies = [...new Set(rows.map((row) => normalizeCurrency(row.currency || "EUR")))].sort();
+  const availableAssets = [...new Set(rows.map(dividendAssetKey))].sort();
+  const filteredDividendRows = rows.filter((row) => {
+    const date = parseDate(row.pay_date);
+    const year = date ? String(date.getFullYear()) : "Sin fecha";
+    return (
+      (!globalFilters.year || year === globalFilters.year) &&
+      (!globalFilters.broker || (row.broker?.name ?? "Sin broker") === globalFilters.broker) &&
+      (!globalFilters.currency || normalizeCurrency(row.currency || "EUR") === globalFilters.currency) &&
+      (!globalFilters.asset || dividendAssetKey(row) === globalFilters.asset)
+    );
+  });
+  const totalNet = filteredDividendRows.reduce((acc, row) => acc + toNumber(row.net_amount ?? 0), 0);
+  const totalGross = filteredDividendRows.reduce((acc, row) => acc + toNumber(row.gross_amount ?? 0), 0);
+  const totalTax = filteredDividendRows.reduce((acc, row) => acc + toNumber(row.tax ?? 0), 0);
+  const monthlyRows = dividendMonthlyRows(filteredDividendRows);
+  const yearlyRows = aggregateDividends(filteredDividendRows, (row) => {
     const date = parseDate(row.pay_date);
     return date ? String(date.getFullYear()) : "Sin fecha";
   });
-  const byAsset = aggregateDividends(rows, (row) => `${primarySymbols.get(row.asset_id) ?? ""} ${row.asset?.name ?? ""}`.trim() || "Sin activo");
-  const byBroker = aggregateDividends(rows, (row) => row.broker?.name ?? "Sin broker");
-  const byCurrency = aggregateDividends(rows, (row) => row.currency || "Sin moneda");
-  const annualPivot = dividendAnnualPivot(rows);
+  const byAsset = aggregateDividends(filteredDividendRows, dividendAssetKey);
+  const byBroker = aggregateDividends(filteredDividendRows, (row) => row.broker?.name ?? "Sin broker");
+  const byCurrency = aggregateDividends(filteredDividendRows, (row) => normalizeCurrency(row.currency || "EUR"));
+  const annualPivot = dividendAnnualPivot(filteredDividendRows);
   return (
     <>
       <form className="panel form-panel" onSubmit={onSubmit}>
@@ -1782,6 +1875,47 @@ function DividendsView({
           <h2>Dividendos</h2>
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="filtrar dividendos" />
         </div>
+        <div className="filter-grid">
+          <label>
+            Ano
+            <select value={globalFilters.year} onChange={(event) => setGlobalFilters((current) => ({ ...current, year: event.target.value }))}>
+              <option value="">Todos</option>
+              {availableYears.map((year) => (
+                <option key={year}>{year}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Broker
+            <select value={globalFilters.broker} onChange={(event) => setGlobalFilters((current) => ({ ...current, broker: event.target.value }))}>
+              <option value="">Todos</option>
+              {availableBrokers.map((broker) => (
+                <option key={broker}>{broker}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Moneda
+            <select value={globalFilters.currency} onChange={(event) => setGlobalFilters((current) => ({ ...current, currency: event.target.value }))}>
+              <option value="">Todas</option>
+              {availableCurrencies.map((currency) => (
+                <option key={currency}>{currency}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Activo
+            <select value={globalFilters.asset} onChange={(event) => setGlobalFilters((current) => ({ ...current, asset: event.target.value }))}>
+              <option value="">Todos</option>
+              {availableAssets.map((asset) => (
+                <option key={asset}>{asset}</option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="ghost" onClick={() => setGlobalFilters({ year: "", broker: "", currency: "", asset: "" })}>
+            Limpiar filtros
+          </button>
+        </div>
         <div className="summary-grid compact">
           <Metric label="Neto visible" value={formatMoney(totalNet)} />
           <Metric label="Bruto visible" value={formatMoney(totalGross)} />
@@ -1809,9 +1943,9 @@ function DividendsView({
         <LineChart rows={monthlyRows} metric="Neto" />
       </section>
       <section className="three-grid">
-        <DividendSummaryTable title="Por ano" rows={yearlyRows} />
-        <DividendSummaryTable title="Por broker" rows={byBroker} />
-        <DividendSummaryTable title="Por moneda" rows={byCurrency} />
+        <DividendSummaryTable title="Por ano" rows={yearlyRows} onPick={(value) => setGlobalFilters((current) => ({ ...current, year: value }))} />
+        <DividendSummaryTable title="Por broker" rows={byBroker} onPick={(value) => setGlobalFilters((current) => ({ ...current, broker: value }))} />
+        <DividendSummaryTable title="Por moneda" rows={byCurrency} onPick={(value) => setGlobalFilters((current) => ({ ...current, currency: value }))} />
       </section>
       </>
       )}
@@ -1840,18 +1974,18 @@ function DividendsView({
       </>
       )}
       {section === "assets" && (
-      <DividendSummaryTable title="Dividendos por activo" rows={byAsset} />
+      <DividendSummaryTable title="Dividendos por activo" rows={byAsset} onPick={(value) => setGlobalFilters((current) => ({ ...current, asset: value }))} />
       )}
       {section === "edit" && (
       <section className="panel">
         <div className="panel-header">
           <h2>Base de datos dividendos</h2>
-          <span className="muted-inline">{rows.length} filas visibles</span>
+          <span className="muted-inline">{filteredDividendRows.length} filas visibles</span>
         </div>
         <EditableTable
           columns={["Fecha", "Ticker", "Bruto", "Tax", "Neto", "Moneda", "Broker", "Nota", ""]}
           totalColumns={[{ index: 2, format: "money" }, { index: 3, format: "money" }, { index: 4, format: "money" }]}
-          rows={rows.map((row) => {
+          rows={filteredDividendRows.map((row) => {
             const draft = drafts[row.id] ?? dividendFormFromRow(row);
             const setDraft = (patch: Partial<DividendForm>) => setDrafts((current) => ({ ...current, [row.id]: { ...draft, ...patch } }));
             return [
@@ -1909,6 +2043,7 @@ function DividendCalendarView({
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
   const [calendarType, setCalendarType] = useState("");
   const [currencyFilter, setCurrencyFilter] = useState("");
+  const [calendarBroker, setCalendarBroker] = useState("");
   const upcoming = events
     .filter((event) => event.payment_date || event.ex_date)
     .sort((a, b) => String(a.payment_date ?? a.ex_date).localeCompare(String(b.payment_date ?? b.ex_date)));
@@ -1917,7 +2052,8 @@ function DividendCalendarView({
     return (
       eventMonth === month &&
       (!calendarType || event.asset_type === calendarType) &&
-      (!currencyFilter || normalizeCurrency(event.currency) === currencyFilter)
+      (!currencyFilter || normalizeCurrency(event.currency) === currencyFilter) &&
+      (!calendarBroker || (event.broker ?? "Sin broker") === calendarBroker)
     );
   });
   const expectedEur = upcoming
@@ -1929,12 +2065,13 @@ function DividendCalendarView({
     .reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
   const averageConfidence =
     upcoming.length > 0 ? upcoming.reduce((acc, event) => acc + toNumber(event.confidence), 0) / upcoming.length : 0;
-  const byMonth = aggregateCalendarEvents(upcoming, (event) => monthKey(event.payment_date ?? event.ex_date));
   const byAsset = aggregateCalendarEvents(
-    upcoming,
+    filteredEvents,
     (event) => `${event.symbol ?? ""} ${event.asset_name ?? ""}`.trim() || "Sin activo"
   );
+  const byMonth = aggregateCalendarEvents(filteredEvents, (event) => monthKey(event.payment_date ?? event.ex_date));
   const currencies = [...new Set(upcoming.map((event) => normalizeCurrency(event.currency)))].sort();
+  const brokers = [...new Set(upcoming.map((event) => event.broker ?? "Sin broker"))].sort();
   const calendarDays = monthCalendarDays(month);
   const eventsByDate = new Map<string, DividendCalendarEvent[]>();
   for (const event of filteredEvents) {
@@ -1944,7 +2081,7 @@ function DividendCalendarView({
   const selectedEvents = eventsByDate.get(selectedDate) ?? [];
   const monthTotal = filteredEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
   const selectedTotal = selectedEvents.reduce((acc, event) => acc + toNumber(event.expected_gross_amount), 0);
-  const monthlyForecast = calendarMonthlySeries(upcoming);
+  const monthlyForecast = calendarMonthlySeries(upcoming.filter((event) => !calendarBroker || (event.broker ?? "Sin broker") === calendarBroker));
   return (
     <section className="income-workbench">
       <div className="income-kpis">
@@ -1962,23 +2099,12 @@ function DividendCalendarView({
             <span>Dividend income</span>
           </div>
           <label>
-            Virtual Portfolio
-            <select>
-              <option>Core Portfolio</option>
-              <option>ETF MyInvestor resistente</option>
-            </select>
-          </label>
-          <label>
-            Strategy
-            <select>
-              <option>All Strategies</option>
-              <option>Cartera ETF resistente</option>
-            </select>
-          </label>
-          <label>
             Broker
-            <select>
-              <option>All Brokers</option>
+            <select value={calendarBroker} onChange={(event) => setCalendarBroker(event.target.value)}>
+              <option value="">All Brokers</option>
+              {brokers.map((broker) => (
+                <option key={broker}>{broker}</option>
+              ))}
             </select>
           </label>
           <label>
@@ -2009,6 +2135,7 @@ function DividendCalendarView({
             <Metric label="Dia elegido" value={formatPlainMoney(selectedTotal, currencyFilter || "EUR")} />
           </div>
           <button className="ghost" onClick={() => {
+            setCalendarBroker("");
             setCalendarType("");
             setCurrencyFilter("");
           }}>
@@ -2122,7 +2249,7 @@ function DividendCalendarView({
           <SimpleTable
             columns={["Date", "Ticker", "Name", "Amount", "Ccy", "Ex-Dividend", "Confidence", "Source"]}
             totalColumns={[{ index: 3, format: "money" }]}
-            rows={upcoming.slice(0, 18).map((event) => [
+            rows={filteredEvents.slice(0, 18).map((event) => [
               event.payment_date ?? "",
               event.symbol ?? "",
               event.asset_name ?? "",
@@ -2262,7 +2389,7 @@ function EtfView({
 }) {
   const etfPositions = positions.filter((row) => row.asset_type === "etf");
   const total = etfPositions.reduce((acc, row) => acc + row.marketValue, 0);
-  const bySymbol = new Map(etfPositions.map((row) => [row.symbol, row]));
+  const legacyBySymbol = new Map(etfs.map((row, index) => [String(row.symbol ?? row.ticker ?? "").toUpperCase(), { row, index }]));
   const strategicAssetIds = new Set(assetTags.filter((row) => row.tag === "myinvestor_resilient_etf").map((row) => row.asset_id));
   const strategicCount = etfPositions.filter((row) => strategicAssetIds.has(row.asset_id)).length;
   const changeEtf = (index: number, key: string, value: string) => {
@@ -2275,6 +2402,28 @@ function EtfView({
         : row
     );
     onChange(next);
+  };
+  const changePositionEtf = (
+    symbol: string,
+    position: Position & { symbol: string; marketValue: number; costBasis: number; latentGain: number; dailyGain: number },
+    key: string,
+    value: string
+  ) => {
+    const legacy = legacyBySymbol.get(symbol);
+    if (legacy) {
+      changeEtf(legacy.index, key, value);
+      return;
+    }
+    onChange([
+      ...etfs,
+      {
+        symbol,
+        provider_name: position.name,
+        name: position.name,
+        targetWeight: 0,
+        [key]: key === "targetWeight" ? toNumber(value) / 100 : value,
+      },
+    ]);
   };
   return (
     <>
@@ -2296,32 +2445,32 @@ function EtfView({
       <section className="panel">
         <h2>Objetivos ETF</h2>
         <EditableTable
-          columns={["Ticker", "Nombre", "ISIN", "Proveedor", "Resistente", "Peso actual", "Peso objetivo %", "Diferencia", "EUR aprox."]}
-          totalColumns={[{ index: 8, format: "money" }]}
-          rows={etfs.map((row, index) => {
-            const symbol = String(row.symbol ?? row.ticker ?? "");
-            const position = bySymbol.get(symbol);
-            const actualWeight = total ? Number(position?.marketValue ?? 0) / total : 0;
+          columns={["Ticker", "Broker", "Nombre", "ISIN", "Proveedor", "Resistente", "Cantidad", "Valor EUR", "Peso actual", "Peso objetivo %", "Diferencia", "EUR aprox."]}
+          totalColumns={[{ index: 7, format: "money" }, { index: 11, format: "money" }]}
+          rows={etfPositions.map((position) => {
+            const symbol = String(position.symbol ?? "").toUpperCase();
+            const legacy = legacyBySymbol.get(symbol);
+            const row = legacy?.row ?? {};
+            const actualWeight = total ? Number(position.marketValue ?? 0) / total : 0;
             const targetWeight = Number(row.targetWeight ?? 0);
             const delta = targetWeight - actualWeight;
-            const isStrategic = position ? strategicAssetIds.has(position.asset_id) : false;
+            const isStrategic = strategicAssetIds.has(position.asset_id);
             return [
-              <input value={symbol} onChange={(event) => changeEtf(index, "symbol", event.target.value.toUpperCase())} />,
-              <input value={String(row.provider_name ?? row.name ?? "")} onChange={(event) => changeEtf(index, "provider_name", event.target.value)} />,
-              <input value={String(row.isin ?? "")} onChange={(event) => changeEtf(index, "isin", event.target.value.toUpperCase())} />,
-              <input value={String(row.provider ?? "")} onChange={(event) => changeEtf(index, "provider", event.target.value)} />,
-              position ? (
-                <input
-                  aria-label="ETF cartera resistente"
-                  checked={isStrategic}
-                  onChange={(event) => onToggleStrategicTag(position.asset_id, event.target.checked)}
-                  type="checkbox"
-                />
-              ) : (
-                ""
-              ),
+              <input value={symbol} onChange={(event) => changePositionEtf(symbol, position, "symbol", event.target.value.toUpperCase())} />,
+              position.broker,
+              <input value={String(row.provider_name ?? row.name ?? position.name ?? "")} onChange={(event) => changePositionEtf(symbol, position, "provider_name", event.target.value)} />,
+              <input value={String(row.isin ?? "")} onChange={(event) => changePositionEtf(symbol, position, "isin", event.target.value.toUpperCase())} />,
+              <input value={String(row.provider ?? "")} onChange={(event) => changePositionEtf(symbol, position, "provider", event.target.value)} />,
+              <input
+                aria-label="ETF cartera resistente"
+                checked={isStrategic}
+                onChange={(event) => onToggleStrategicTag(position.asset_id, event.target.checked)}
+                type="checkbox"
+              />,
+              formatNumber(position.quantity),
+              formatMoney(position.marketValue),
               formatPercent(actualWeight),
-              <input value={targetWeight ? String(Math.round(targetWeight * 10000) / 100) : ""} onChange={(event) => changeEtf(index, "targetWeight", event.target.value)} inputMode="decimal" />,
+              <input value={targetWeight ? String(Math.round(targetWeight * 10000) / 100) : ""} onChange={(event) => changePositionEtf(symbol, position, "targetWeight", event.target.value)} inputMode="decimal" />,
               <span className={delta >= 0 ? "good" : "bad"}>{formatPercent(delta)}</span>,
               <span className={delta >= 0 ? "good" : "bad"}>{formatMoney(delta * total)}</span>,
             ];
@@ -3264,25 +3413,64 @@ function reportTypeLabel(type: ResearchReport["report_type"]) {
   return labels[type];
 }
 
-function QueueView({ queue }: { queue: ResolutionQueueItem[] }) {
+function QueueView({
+  queue,
+  onUpdate,
+  loading,
+}: {
+  queue: ResolutionQueueItem[];
+  onUpdate: (id: string, patch: Partial<ResolutionQueueItem>) => void;
+  loading: boolean;
+}) {
+  const [drafts, setDrafts] = useState<Record<string, Partial<ResolutionQueueItem>>>({});
+  useEffect(() => {
+    setDrafts(
+      Object.fromEntries(
+        queue.map((item) => [
+          item.id,
+          {
+            raw_name: item.raw_name ?? "",
+            symbol: item.symbol ?? "",
+            isin: item.isin ?? "",
+            broker: item.broker ?? "",
+            status: item.status,
+            notes: item.notes ?? "",
+          },
+        ])
+      )
+    );
+  }, [queue]);
   return (
     <section className="panel">
-      <h2>Resoluciones pendientes</h2>
-      <div className="queue-list">
-        {queue.length === 0 ? (
-          <p className="empty">Sin pendientes.</p>
-        ) : (
-          queue.map((item) => (
-            <article key={item.id} className="queue-item">
-              <strong>{item.raw_name ?? item.symbol ?? "Movimiento sin activo"}</strong>
-              <span>
-                {item.broker ?? "Sin broker"} - {item.source}
-              </span>
-              <p>{item.notes}</p>
-            </article>
-          ))
-        )}
+      <div className="panel-header">
+        <h2>Watchlist y resoluciones</h2>
+        <span className="muted-inline">{queue.length} elementos</span>
       </div>
+      <EditableTable
+        columns={["Origen", "Nombre detectado", "Ticker", "ISIN", "Broker", "Estado", "Notas", "Creado", ""]}
+        rows={queue.map((item) => {
+          const draft = drafts[item.id] ?? item;
+          const setDraft = (patch: Partial<ResolutionQueueItem>) =>
+            setDrafts((current) => ({ ...current, [item.id]: { ...draft, ...patch } }));
+          return [
+            item.source,
+            <input value={String(draft.raw_name ?? "")} onChange={(event) => setDraft({ raw_name: event.target.value })} />,
+            <input value={String(draft.symbol ?? "")} onChange={(event) => setDraft({ symbol: event.target.value.toUpperCase() })} />,
+            <input value={String(draft.isin ?? "")} onChange={(event) => setDraft({ isin: event.target.value.toUpperCase() })} />,
+            <input value={String(draft.broker ?? "")} onChange={(event) => setDraft({ broker: event.target.value })} />,
+            <select value={draft.status ?? "pending"} onChange={(event) => setDraft({ status: event.target.value as ResolutionQueueItem["status"] })}>
+              <option value="pending">Pendiente</option>
+              <option value="resolved">Resuelto</option>
+              <option value="ignored">Ignorado</option>
+            </select>,
+            <input value={String(draft.notes ?? "")} onChange={(event) => setDraft({ notes: event.target.value })} />,
+            item.created_at ? new Date(item.created_at).toLocaleString("es-ES") : "",
+            <button onClick={() => onUpdate(item.id, draft)} disabled={loading}>
+              Guardar
+            </button>,
+          ];
+        })}
+      />
     </section>
   );
 }
@@ -3342,13 +3530,15 @@ function SectionTabs<T extends string>({
   tabs,
   active,
   onChange,
+  className = "",
 }: {
   tabs: Array<{ id: T; label: string }>;
   active: T;
   onChange: (value: T) => void;
+  className?: string;
 }) {
   return (
-    <nav className="section-tabs" aria-label="Secciones">
+    <nav className={`section-tabs ${className}`} aria-label="Secciones">
       {tabs.map((tab) => (
         <button key={tab.id} type="button" className={active === tab.id ? "active" : ""} onClick={() => onChange(tab.id)}>
           {tab.label}
@@ -3358,11 +3548,12 @@ function SectionTabs<T extends string>({
   );
 }
 
-function DividendSummaryTable({ title, rows }: { title: string; rows: DividendAggregate[] }) {
+function DividendSummaryTable({ title, rows, onPick }: { title: string; rows: DividendAggregate[]; onPick?: (value: string) => void }) {
   return (
     <section className="panel">
       <h2>{title}</h2>
       <SimpleTable
+        hideFilters={Boolean(onPick)}
         columns={["Grupo", "Bruto", "Tax", "Neto", "Dividendos", "Peso"]}
         totalColumns={[
           { index: 1, format: "money" },
@@ -3371,7 +3562,13 @@ function DividendSummaryTable({ title, rows }: { title: string; rows: DividendAg
           { index: 4, format: "number" },
         ]}
         rows={rows.map((row) => [
-          row.name,
+          onPick ? (
+            <button type="button" className="text-action" onClick={() => onPick(row.name)}>
+              {row.name}
+            </button>
+          ) : (
+            row.name
+          ),
           formatMoney(row.gross),
           formatMoney(row.tax),
           formatMoney(row.net),
@@ -3437,10 +3634,12 @@ function SimpleTable({
   columns,
   rows,
   totalColumns = [],
+  hideFilters = false,
 }: {
   columns: string[];
   rows: Array<Array<React.ReactNode>>;
   totalColumns?: TotalColumn[];
+  hideFilters?: boolean;
 }) {
   const [filters, setFilters] = useState<Record<number, string>>({});
   const filteredRows = useMemo(
@@ -3462,17 +3661,19 @@ function SimpleTable({
               <th key={column}>{column}</th>
             ))}
           </tr>
-          <tr className="filter-row">
-            {columns.map((column, index) => (
-              <th key={`${column}-filter`}>
-                <input
-                  value={filters[index] ?? ""}
-                  onChange={(event) => setFilters((current) => ({ ...current, [index]: event.target.value }))}
-                  placeholder="filtrar"
-                />
-              </th>
-            ))}
-          </tr>
+          {!hideFilters && (
+            <tr className="filter-row">
+              {columns.map((column, index) => (
+                <th key={`${column}-filter`}>
+                  <input
+                    value={filters[index] ?? ""}
+                    onChange={(event) => setFilters((current) => ({ ...current, [index]: event.target.value }))}
+                    placeholder="filtrar"
+                  />
+                </th>
+              ))}
+            </tr>
+          )}
         </thead>
         <tbody>
           {filteredRows.length === 0 ? (
