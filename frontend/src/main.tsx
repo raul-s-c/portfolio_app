@@ -1176,7 +1176,9 @@ function App() {
           totals={totals}
           queueCount={queue.length}
           onRefresh={loadDashboardData}
+          onRefreshPrices={refreshPriceHistory}
           loading={loading}
+          refreshingPrices={refreshingPriceHistory}
           onGenerateReport={generateReport}
           generatingReportType={generatingReportType}
         />
@@ -1192,6 +1194,8 @@ function App() {
           setBrokerFilter={setBrokerFilter}
           setTypeFilter={setTypeFilter}
           setSearch={setPositionSearch}
+          onRefreshPrices={refreshPriceHistory}
+          refreshingPrices={refreshingPriceHistory}
         />
       )}
       {activeTab === "transactions" && (
@@ -1348,7 +1352,9 @@ function DashboardView({
   totals,
   queueCount,
   onRefresh,
+  onRefreshPrices,
   loading,
+  refreshingPrices,
   onGenerateReport,
   generatingReportType,
 }: {
@@ -1356,7 +1362,9 @@ function DashboardView({
   totals: { marketValue: number; costBasis: number; dailyGain: number; dividendsNet: number; latentGain: number };
   queueCount: number;
   onRefresh: () => void;
+  onRefreshPrices: () => void;
   loading: boolean;
+  refreshingPrices: boolean;
   onGenerateReport: (type: ReportType) => void;
   generatingReportType: ReportType | "";
 }) {
@@ -1367,6 +1375,7 @@ function DashboardView({
   const etfPositions = positions.filter((row) => row.asset_type === "etf");
   const etfTotal = etfPositions.reduce((acc, row) => acc + row.marketValue, 0);
   const topDrift = [...positions].sort((a, b) => Math.abs(b.latentGain) - Math.abs(a.latentGain)).slice(0, 5);
+  const latestPriceAt = latestPositionPriceDate(positions);
   return (
     <>
       <section className="command-center">
@@ -1376,6 +1385,9 @@ function DashboardView({
           <p>Filtra posiciones, genera informes y separa estrategias sin perder la trazabilidad por activo y broker.</p>
         </div>
         <div className="inline-actions">
+          <button className="ghost" onClick={onRefreshPrices} disabled={refreshingPrices}>
+            {refreshingPrices ? "Actualizando precios..." : "Actualizar precios"}
+          </button>
           <button onClick={() => onGenerateReport("portfolio_group_analysis")} disabled={Boolean(generatingReportType)}>
             {generatingReportType === "portfolio_group_analysis" ? "Generando..." : "Informe por grupos"}
           </button>
@@ -1407,6 +1419,7 @@ function DashboardView({
           <Metric label="P&G del dia" value={formatMoney(totals.dailyGain)} tone={totals.dailyGain >= 0 ? "good" : "bad"} />
           <Metric label="Rentabilidad latente" value={formatPercent(totals.costBasis ? totals.latentGain / totals.costBasis : 0)} tone={totals.latentGain >= 0 ? "good" : "bad"} />
           <Metric label="Posiciones abiertas" value={positions.length} />
+          <Metric label="Ultimo precio" value={latestPriceAt ? relativeDateLabel(latestPriceAt) : "Sin precios"} />
           <Metric label="Pendiente resolver" value={queueCount} />
         </div>
       </section>
@@ -1488,6 +1501,8 @@ function PositionsView({
   setBrokerFilter,
   setTypeFilter,
   setSearch,
+  onRefreshPrices,
+  refreshingPrices,
 }: {
   rows: Array<Position & { symbol: string; costBasis: number; marketValue: number; dailyGain: number; latentGain: number }>;
   brokerNames: string[];
@@ -1498,12 +1513,19 @@ function PositionsView({
   setBrokerFilter: (value: string) => void;
   setTypeFilter: (value: string) => void;
   setSearch: (value: string) => void;
+  onRefreshPrices: () => void;
+  refreshingPrices: boolean;
 }) {
+  const latestPriceAt = latestPositionPriceDate(rows);
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>Operaciones abiertas</h2>
         <div className="toolbar">
+          <span className="muted-inline">Ultimo precio: {latestPriceAt ? relativeDateLabel(latestPriceAt) : "sin precios"}</span>
+          <button onClick={onRefreshPrices} disabled={refreshingPrices}>
+            {refreshingPrices ? "Actualizando..." : "Actualizar precios"}
+          </button>
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="filtrar" />
           <select value={brokerFilter} onChange={(event) => setBrokerFilter(event.target.value)}>
             <option value="">Todos los brokers</option>
@@ -3886,6 +3908,24 @@ function dividendAnnualPivot(rows: Array<Dividend & { asset?: Asset; broker?: Br
 function parseDate(value: string | null | undefined) {
   const date = new Date(String(value ?? ""));
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function latestPositionPriceDate(rows: Array<{ priced_at: string | null }>) {
+  return rows
+    .map((row) => parseDate(row.priced_at))
+    .filter((date): date is Date => Boolean(date))
+    .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+}
+
+function relativeDateLabel(date: Date) {
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) return "fecha futura";
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 60) return `hace ${Math.max(1, minutes)} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `hace ${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `hace ${days} dias`;
 }
 
 function aggregateCalendarEvents(events: DividendCalendarEvent[], keyFn: (event: DividendCalendarEvent) => string): CalendarAggregate[] {
