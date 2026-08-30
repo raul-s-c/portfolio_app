@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, isValidElement, useEffect, useMemo, useState } from "react";
 import { Root, createRoot } from "react-dom/client";
 import { Session, SupabaseClient, createClient } from "@supabase/supabase-js";
 import "./styles.css";
@@ -4514,6 +4514,11 @@ function formatTableTotal(rows: Array<Array<React.ReactNode>>, totalColumns: Tot
 }
 
 function numericCellValue(value: React.ReactNode): number {
+  if (isValidElement(value)) {
+    const props = value.props as { tableValue?: unknown; position?: { marketValue?: unknown } };
+    if (props.tableValue != null) return toNumber(props.tableValue);
+    if (props.position?.marketValue != null) return toNumber(props.position.marketValue);
+  }
   return parseLocaleNumber(cellText(value));
 }
 
