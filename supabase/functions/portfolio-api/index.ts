@@ -71,8 +71,9 @@ async function supabaseRest(path: string, init: RequestInit = {}) {
     const text = await response.text();
     throw new Error(`Supabase REST ${response.status}: ${text}`);
   }
-  if (response.status === 204) return [];
-  return response.json();
+  const text = await response.text();
+  if (!text.trim()) return [];
+  return JSON.parse(text);
 }
 
 function inList(values: string[]) {
@@ -601,23 +602,104 @@ async function yahooPriceHistory(symbol: string, years: number) {
     .filter((row: Dict) => Number(row.close_price) > 0);
 }
 
-async function refreshPriceHistory(payload: Dict) {
-  const years = Number(payload.years || 5);
-  const maxAssets = Number(payload.max_assets || 250);
+async function yahooCurrentQuote(symbol: string) {
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`);
+  url.searchParams.set("range", "2d");
+  url.searchParams.set("interval", "1d");
+  const response = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0 PortfolioCurrentPrice/1.0" },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Yahoo ${symbol} ${response.status}: ${text.slice(0, 240)}`);
+  if (!text.trim()) throw new Error(`Yahoo ${symbol} devolvio respuesta vacia`);
+  const data = JSON.parse(text);
+  const result = data.chart?.result?.[0] || {};
+  const meta = result.meta || {};
+  const price = Number(meta.regularMarketPrice || meta.previousClose || 0);
+  if (!price) throw new Error(`Yahoo ${symbol} no devolvio precio`);
+  return {
+    price,
+    previous_close: meta.previousClose ? Number(meta.previousClose) : null,
+    currency: normalizeCurrency(meta.currency || "EUR"),
+    provider: "yahoo",
+    raw_payload: { symbol, meta },
+  };
+}
+
+async function loadPriceIdentifiers(maxAssets: number) {
   const positions = (await supabaseRest(`v_open_positions?select=asset_id,name,asset_type&order=market_value.desc&limit=${maxAssets}`)) as Dict[];
   const assetIds = uniqueTerms(positions.map((row) => row.asset_id), maxAssets);
-  if (!assetIds.length) return { status: "ok", assets: 0, rows: 0 };
+  if (!assetIds.length) return { assetIds, identifiers: [] as Dict[] };
   const identifiers = (await supabaseRest(
     `asset_identifiers?select=asset_id,provider,symbol,is_primary&asset_id=in.(${inList(assetIds)})`,
   )) as Dict[];
+  return { assetIds, identifiers };
+}
+
+function bestPriceSymbol(assetId: string, identifiers: Dict[]) {
+  return (
+    identifiers.find((row) => String(row.asset_id) === assetId && row.provider === "yahoo")?.symbol ||
+    identifiers.find((row) => String(row.asset_id) === assetId && row.is_primary)?.symbol ||
+    ""
+  );
+}
+
+async function refreshCurrentPrices(payload: Dict) {
+  const maxAssets = Number(payload.max_assets || 250);
+  const { assetIds, identifiers } = await loadPriceIdentifiers(maxAssets);
   const rows = [];
+  const errors = [];
   for (const assetId of assetIds) {
-    const symbol =
-      identifiers.find((row) => String(row.asset_id) === assetId && row.provider === "yahoo")?.symbol ||
-      identifiers.find((row) => String(row.asset_id) === assetId && row.is_primary)?.symbol;
-    if (!symbol) continue;
-    const history = await yahooPriceHistory(String(symbol), years);
-    rows.push(...history.map((row: Dict) => ({ ...row, asset_id: assetId })));
+    const symbol = asString(bestPriceSymbol(assetId, identifiers));
+    if (!symbol) {
+      errors.push({ asset_id: assetId, error: "Sin ticker de precio" });
+      continue;
+    }
+    try {
+      const quote = await yahooCurrentQuote(symbol);
+      rows.push({
+        asset_id: assetId,
+        priced_at: new Date().toISOString(),
+        price: quote.price,
+        previous_close: quote.previous_close,
+        currency: quote.currency,
+        provider: quote.provider,
+        raw_payload: quote.raw_payload,
+      });
+    } catch (error) {
+      errors.push({ asset_id: assetId, symbol, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  if (rows.length) {
+    await supabaseRest("price_snapshots", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify(rows),
+    });
+  }
+  return { assets: assetIds.length, rows: rows.length, errors };
+}
+
+async function refreshPriceHistory(payload: Dict) {
+  const years = Number(payload.years || 5);
+  const maxAssets = Number(payload.max_assets || 250);
+  const { assetIds, identifiers } = await loadPriceIdentifiers(maxAssets);
+  if (!assetIds.length) return { status: "ok", assets: 0, rows: 0, errors: [] };
+  const rows = [];
+  const errors = [];
+  for (const assetId of assetIds) {
+    const symbol = asString(bestPriceSymbol(assetId, identifiers));
+    if (!symbol) {
+      errors.push({ asset_id: assetId, error: "Sin ticker de precio" });
+      continue;
+    }
+    try {
+      const history = await yahooPriceHistory(String(symbol), years);
+      rows.push(...history.map((row: Dict) => ({ ...row, asset_id: assetId })));
+    } catch (error) {
+      errors.push({ asset_id: assetId, symbol, error: error instanceof Error ? error.message : String(error) });
+    }
   }
   for (let index = 0; index < rows.length; index += 500) {
     await supabaseRest("asset_price_history?on_conflict=asset_id,priced_on,provider", {
@@ -626,7 +708,21 @@ async function refreshPriceHistory(payload: Dict) {
       body: JSON.stringify(rows.slice(index, index + 500)),
     });
   }
-  return { status: "ok", assets: assetIds.length, rows: rows.length };
+  return { status: "ok", assets: assetIds.length, rows: rows.length, errors };
+}
+
+async function refreshPrices(payload: Dict) {
+  const current = await refreshCurrentPrices(payload);
+  const history = await refreshPriceHistory(payload);
+  return {
+    status: "ok",
+    current,
+    history,
+    assets: current.assets,
+    rows: history.rows,
+    current_rows: current.rows,
+    errors: [...current.errors, ...history.errors],
+  };
 }
 
 Deno.serve(async (request) => {
@@ -645,6 +741,10 @@ Deno.serve(async (request) => {
     if (request.method === "POST" && url.pathname.endsWith("/prices/history/refresh")) {
       const payload = await request.json().catch(() => ({}));
       return jsonResponse(await refreshPriceHistory(payload));
+    }
+    if (request.method === "POST" && url.pathname.endsWith("/prices/refresh")) {
+      const payload = await request.json().catch(() => ({}));
+      return jsonResponse(await refreshPrices(payload));
     }
     return jsonResponse({ error: "Not found" }, 404);
   } catch (error) {

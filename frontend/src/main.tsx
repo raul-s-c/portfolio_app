@@ -595,9 +595,9 @@ function App() {
       return;
     }
     setRefreshingPriceHistory(true);
-    setMessage("Actualizando historico de precios desde backend remoto...");
+    setMessage("Actualizando precios e historico desde backend remoto...");
     try {
-      const response = await fetch(`${apiBaseUrl}/prices/history/refresh`, {
+      const response = await fetch(`${apiBaseUrl}/prices/refresh`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -609,9 +609,12 @@ function App() {
         const text = await response.text();
         throw new Error(text || `HTTP ${response.status}`);
       }
-      const result = await response.json();
+      const result = await readJsonResponse(response);
       await loadDashboardData();
-      setMessage(`Historico actualizado: ${result.rows ?? 0} precios para ${result.assets ?? 0} activos.`);
+      const errors = Array.isArray(result.errors) ? result.errors.length : 0;
+      setMessage(
+        `Precios actualizados: ${result.current_rows ?? 0} actuales y ${result.rows ?? 0} historicos para ${result.assets ?? 0} activos${errors ? ` (${errors} incidencias)` : ""}.`
+      );
     } catch (error) {
       setMessage(`No he podido actualizar historicos. ${error instanceof Error ? error.message : ""}`);
     } finally {
@@ -3993,6 +3996,16 @@ function friendlySupabaseError(message: string) {
     return "La sesion de Supabase tiene una hora invalida. Pulsa Salir, entra de nuevo y revisa que la hora del PC este sincronizada si vuelve a pasar.";
   }
   return message;
+}
+
+async function readJsonResponse(response: Response) {
+  const text = await response.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(text.slice(0, 500));
+  }
 }
 
 function sumColumn(rows: Array<Array<React.ReactNode>>, index: number) {
