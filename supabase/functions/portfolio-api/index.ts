@@ -655,7 +655,12 @@ function priceSymbolsForAsset(assetId: string, identifiers: Dict[]) {
   const today = new Date().toISOString().slice(0, 10);
   return uniqueTerms(
     identifiers
-      .filter((row) => String(row.asset_id) === assetId && (!row.valid_to || String(row.valid_to) >= today))
+      .filter(
+        (row) =>
+          String(row.asset_id) === assetId &&
+          (!row.valid_to || String(row.valid_to) >= today) &&
+          (row.provider === "yahoo" || row.provider === "manual"),
+      )
       .sort((left, right) => {
         const priority = (row: Dict) =>
           row.provider === "yahoo" && row.is_primary ? 0 : row.provider === "yahoo" ? 1 : row.is_primary ? 2 : 3;
@@ -697,10 +702,15 @@ async function refreshCurrentPrices(payload: Dict) {
   const { assetIds, assets, identifiers } = await loadPriceIdentifiers(maxAssets);
   const rows = [];
   const errors = [];
+  const skipped = [];
   for (const assetId of assetIds) {
     const asset = assets.find((row) => String(row.asset_id) === assetId) || {};
     const symbols = priceSymbolsForAsset(assetId, identifiers);
     if (!symbols.length) {
+      if (asset.asset_type === "fund") {
+        skipped.push({ asset_id: assetId, name: asset.name, asset_type: asset.asset_type, stage: "current", reason: "Valor liquidativo manual" });
+        continue;
+      }
       errors.push({ asset_id: assetId, name: asset.name, asset_type: asset.asset_type, stage: "current", error: "Sin ticker de precio" });
       continue;
     }
@@ -734,20 +744,25 @@ async function refreshCurrentPrices(payload: Dict) {
       body: JSON.stringify(rows),
     });
   }
-  return { assets: assetIds.length, rows: rows.length, errors };
+  return { assets: assetIds.length, rows: rows.length, errors, skipped };
 }
 
 async function refreshPriceHistory(payload: Dict) {
   const years = Number(payload.years || 5);
   const maxAssets = Number(payload.max_assets || 250);
   const { assetIds, assets, identifiers } = await loadPriceIdentifiers(maxAssets);
-  if (!assetIds.length) return { status: "ok", assets: 0, rows: 0, errors: [] };
+  if (!assetIds.length) return { status: "ok", assets: 0, rows: 0, errors: [], skipped: [] };
   const rows = [];
   const errors = [];
+  const skipped = [];
   for (const assetId of assetIds) {
     const asset = assets.find((row) => String(row.asset_id) === assetId) || {};
     const symbols = priceSymbolsForAsset(assetId, identifiers);
     if (!symbols.length) {
+      if (asset.asset_type === "fund") {
+        skipped.push({ asset_id: assetId, name: asset.name, asset_type: asset.asset_type, stage: "history", reason: "Valor liquidativo manual" });
+        continue;
+      }
       errors.push({ asset_id: assetId, name: asset.name, asset_type: asset.asset_type, stage: "history", error: "Sin ticker de precio" });
       continue;
     }
@@ -772,7 +787,50 @@ async function refreshPriceHistory(payload: Dict) {
       body: JSON.stringify(rows.slice(index, index + 500)),
     });
   }
-  return { status: "ok", assets: assetIds.length, rows: rows.length, errors };
+  return { status: "ok", assets: assetIds.length, rows: rows.length, errors, skipped };
+}
+
+async function saveManualPrice(payload: Dict) {
+  const assetId = asString(payload.asset_id);
+  const pricedOn = asString(payload.priced_on) || new Date().toISOString().slice(0, 10);
+  const price = Number(payload.price);
+  if (!assetId) throw new Error("Selecciona un activo");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(pricedOn)) throw new Error("Fecha de valor no valida");
+  if (!Number.isFinite(price) || price <= 0) throw new Error("El valor debe ser mayor que cero");
+
+  const assets = (await supabaseRest(`assets?select=id,name,currency&id=eq.${assetId}&limit=1`)) as Dict[];
+  const asset = assets[0];
+  if (!asset) throw new Error("Activo no encontrado");
+  const currency = normalizeCurrency(payload.currency || asset.currency || "EUR");
+  const toEur = await yahooFxToEur(currency);
+  const rawPayload = { source: "manual_app", to_eur: toEur };
+
+  await supabaseRest("price_snapshots?on_conflict=asset_id,priced_at,provider", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({
+      asset_id: assetId,
+      priced_at: `${pricedOn}T12:00:00.000Z`,
+      price,
+      previous_close: null,
+      currency,
+      provider: "manual",
+      raw_payload: rawPayload,
+    }),
+  });
+  await supabaseRest("asset_price_history?on_conflict=asset_id,priced_on,provider", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({
+      asset_id: assetId,
+      priced_on: pricedOn,
+      close_price: price,
+      currency,
+      provider: "manual",
+      raw_payload: rawPayload,
+    }),
+  });
+  return { status: "ok", asset_id: assetId, name: asset.name, priced_on: pricedOn, price, currency, to_eur: toEur };
 }
 
 async function refreshPrices(payload: Dict) {
@@ -786,6 +844,7 @@ async function refreshPrices(payload: Dict) {
     rows: history.rows,
     current_rows: current.rows,
     errors: [...current.errors, ...history.errors],
+    skipped: [...current.skipped, ...history.skipped],
   };
 }
 
@@ -805,6 +864,10 @@ Deno.serve(async (request) => {
     if (request.method === "POST" && url.pathname.endsWith("/prices/history/refresh")) {
       const payload = await request.json().catch(() => ({}));
       return jsonResponse(await refreshPriceHistory(payload));
+    }
+    if (request.method === "POST" && url.pathname.endsWith("/prices/manual")) {
+      const payload = await request.json().catch(() => ({}));
+      return jsonResponse(await saveManualPrice(payload));
     }
     if (request.method === "POST" && url.pathname.endsWith("/prices/refresh")) {
       const payload = await request.json().catch(() => ({}));

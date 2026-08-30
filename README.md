@@ -461,6 +461,8 @@ Endpoint manual:
 POST /api/prices/refresh
 ```
 
+Los fondos sin ticker de mercado verificable se identifican por ISIN. Su valor liquidativo se introduce desde `Portfolio -> Mapeos -> Valor liquidativo manual`; la app guarda el dato tanto como precio actual como en el historico diario. Estos fondos se muestran como `Valor liquidativo manual` y no cuentan como incidencia del actualizador automatico.
+
 ## Informes Con Brave + OpenAI
 
 El flujo previsto es:
@@ -723,11 +725,11 @@ Pendiente confirmar:
 2. Si los jobs nocturnos enviaran alertas por email, Telegram, Slack o solo tabla en Supabase.
 3. Si los fondos sin ticker se resolveran por ISIN, nombre manual o tabla externa.
 4. Si se quiere FIFO fiscal o coste medio operativo. Ahora esta implementado coste medio operativo.
-5. Si se anade `owner_id` para seguridad multiusuario o se deja mono-usuario.
+5. Si se anade `owner_id` antes de crear un segundo usuario. El modelo actual es privado y mono-usuario: cualquier cuenta autenticada adicional compartiria el mismo conjunto de datos.
 
 ## Estado De Seguridad
 
-El esquema incluye RLS para lectura autenticada y escritura con service role.
+El esquema incluye RLS para lectura autenticada y escritura controlada. No existen politicas ni privilegios de lectura o escritura para el rol anonimo. La tabla legacy `user_sync_states`, que no usa el frontend actual, queda limitada al `service_role`.
 
 El frontend usa login con email y contrasena, no enlace magico por email. Esto evita el limite de reintentos de OTP de Supabase.
 
@@ -762,6 +764,9 @@ Para uso personal, mono-usuario esta bien, pero conviene anadir columna `owner_i
 | `supabase/migrations/014_service_role_virtual_portfolio_grants.sql` | Permisos backend para carteras virtuales e informes |
 | `supabase/migrations/015_weighted_cost_reconciliation.sql` | Coste medio ponderado y conciliacion Portfolio/Activity |
 | `supabase/migrations/016_database_audit_hardening.sql` | Vistas con RLS invocador e indices de claves foraneas |
+| `supabase/migrations/017_repair_price_identifiers.sql` | Reparacion de tickers de mercado e identificadores de precio |
+| `supabase/migrations/018_onboard_hkex_and_funds.sql` | Alta estable de HKEX 388 y fondos MyInvestor por ISIN |
+| `supabase/migrations/019_remove_legacy_anon_sync_access.sql` | Retirada del acceso anonimo heredado a sincronizacion legacy |
 | `scripts/load_legacy_app_state.mjs` | Carga cash y patrimonio legacy en Supabase |
 | `scripts/nightly_reports.py` | Generacion periodica de informes |
 | `backend/app/services/asset_resolver.py` | Identidad estable de activos |

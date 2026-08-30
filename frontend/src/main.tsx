@@ -752,6 +752,35 @@ function App() {
     await loadDashboardData();
   }
 
+  async function saveManualPrice(assetId: string, price: string, currency: string, pricedOn: string) {
+    if (!session) {
+      setMessage("Entra con tu email antes de guardar un valor.");
+      return false;
+    }
+    const numericPrice = parseLocaleNumber(price);
+    if (!assetId || !Number.isFinite(numericPrice) || numericPrice <= 0) {
+      setMessage("Selecciona un activo e introduce un valor mayor que cero.");
+      return false;
+    }
+    try {
+      const response = await fetch(`${apiBaseUrl}/prices/manual`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ asset_id: assetId, price: numericPrice, currency, priced_on: pricedOn }),
+      });
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+      await loadDashboardData();
+      setMessage("Valor liquidativo guardado y anadido al historico.");
+      return true;
+    } catch (error) {
+      setMessage(`No he podido guardar el valor. ${error instanceof Error ? error.message : ""}`);
+      return false;
+    }
+  }
+
   async function toggleStrategicEtfTag(assetId: string, enabled: boolean) {
     if (!session) {
       setMessage("Entra con tu email antes de cambiar tags.");
@@ -1306,6 +1335,7 @@ function App() {
           form={assetForm}
           setForm={setAssetForm}
           onSubmit={createAsset}
+          onSaveManualPrice={saveManualPrice}
           loading={loading}
         />
       )}
@@ -2441,8 +2471,14 @@ function AssetsView({
   form: AssetForm;
   setForm: (value: AssetForm) => void;
   onSubmit: (event: FormEvent) => void;
+  onSaveManualPrice: (assetId: string, price: string, currency: string, pricedOn: string) => Promise<boolean>;
   loading: boolean;
 }) {
+  const funds = allAssets.filter((asset) => asset.asset_type === "fund");
+  const [manualAssetId, setManualAssetId] = useState("");
+  const [manualPrice, setManualPrice] = useState("");
+  const [manualCurrency, setManualCurrency] = useState("EUR");
+  const [manualDate, setManualDate] = useState(new Date().toISOString().slice(0, 10));
   return (
     <>
       <form className="panel form-panel" onSubmit={onSubmit}>
@@ -2481,6 +2517,52 @@ function AssetsView({
           </label>
         </div>
         <button disabled={loading}>Guardar activo</button>
+      </form>
+      <form
+        className="panel form-panel"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          const saved = await onSaveManualPrice(manualAssetId, manualPrice, manualCurrency, manualDate);
+          if (saved) setManualPrice("");
+        }}
+      >
+        <div className="panel-header">
+          <div>
+            <h2>Valor liquidativo manual</h2>
+            <p className="muted">Para fondos sin fuente automatica verificable. Cada valor queda guardado en el historico.</p>
+          </div>
+        </div>
+        <div className="form-row">
+          <label>
+            Fondo
+            <select
+              value={manualAssetId}
+              onChange={(event) => {
+                const asset = funds.find((row) => row.id === event.target.value);
+                setManualAssetId(event.target.value);
+                setManualCurrency(asset?.currency ?? "EUR");
+              }}
+            >
+              <option value="">Selecciona un fondo</option>
+              {funds.map((asset) => (
+                <option key={asset.id} value={asset.id}>{asset.name} - {asset.isin}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Fecha del valor
+            <input type="date" value={manualDate} onChange={(event) => setManualDate(event.target.value)} />
+          </label>
+          <label>
+            Valor liquidativo
+            <input value={manualPrice} inputMode="decimal" onChange={(event) => setManualPrice(event.target.value)} placeholder="0,00" />
+          </label>
+          <label>
+            Moneda
+            <input value={manualCurrency} onChange={(event) => setManualCurrency(event.target.value.toUpperCase())} maxLength={3} />
+          </label>
+        </div>
+        <button disabled={loading || !funds.length}>Guardar valor</button>
       </form>
       <section className="panel">
         <div className="panel-header">
