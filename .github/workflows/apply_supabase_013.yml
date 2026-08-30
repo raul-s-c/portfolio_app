@@ -1,0 +1,52 @@
+name: Apply Supabase migration 013
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/apply_supabase_013.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_ID: nasuybwjddcrrmekcslu
+      MIGRATION_FILE: supabase/migrations/013_virtual_portfolios_performance.sql
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required inputs
+        shell: bash
+        run: |
+          test -n "$SUPABASE_ACCESS_TOKEN" || (echo "Missing GitHub secret SUPABASE_ACCESS_TOKEN" && exit 1)
+          test -f "$MIGRATION_FILE" || (echo "Missing migration file $MIGRATION_FILE" && exit 1)
+
+      - name: Apply migration 013 through Supabase Management API
+        shell: bash
+        run: |
+          jq -n --rawfile query "$MIGRATION_FILE" '{query: $query, read_only: false}' > /tmp/apply-013.json
+          curl --fail-with-body \
+            --request POST \
+            "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_ID/database/query" \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data-binary @/tmp/apply-013.json
+
+      - name: Validate migration 013
+        shell: bash
+        run: |
+          jq -n \
+            --arg query "select to_regclass('public.portfolio_strategies') as portfolio_strategies, to_regclass('public.virtual_portfolios') as virtual_portfolios, to_regclass('public.virtual_portfolio_assignments') as virtual_portfolio_assignments, to_regclass('public.asset_price_history') as asset_price_history, to_regclass('public.portfolio_cash_flows') as portfolio_cash_flows, to_regclass('public.v_virtual_portfolio_positions') as v_virtual_portfolio_positions;" \
+            '{query: $query, read_only: true}' > /tmp/validate-013.json
+          curl --fail-with-body \
+            --request POST \
+            "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_ID/database/query" \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data-binary @/tmp/validate-013.json
