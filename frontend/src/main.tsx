@@ -1083,7 +1083,7 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="topbar">
+      <header className={`topbar ${activeTab === "dividendCalendar" ? "topbar-flush" : ""}`}>
         <div className="brand-lockup">
           <p className="eyebrow">Portfolio App</p>
           <h1>Cartera privada</h1>
