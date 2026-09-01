@@ -2901,6 +2901,44 @@ function EtfView({
   );
 }
 
+function LocaleNumberInput({
+  value,
+  onValueChange,
+  ariaLabel,
+}: {
+  value: string | number | null | undefined;
+  onValueChange: (value: number) => void;
+  ariaLabel?: string;
+}) {
+  const [draft, setDraft] = useState(() => formatInputNumber(value));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setDraft(formatInputNumber(value));
+  }, [focused, value]);
+
+  return (
+    <input
+      aria-label={ariaLabel}
+      value={draft}
+      inputMode="decimal"
+      onFocus={() => setFocused(true)}
+      onChange={(event) => {
+        const nextDraft = event.target.value;
+        setDraft(nextDraft);
+        const parsed = parseLocaleNumberOrNull(nextDraft);
+        if (parsed != null) onValueChange(parsed);
+      }}
+      onBlur={() => {
+        const parsed = parseLocaleNumberOrNull(draft) ?? 0;
+        onValueChange(parsed);
+        setDraft(formatInputNumber(parsed));
+        setFocused(false);
+      }}
+    />
+  );
+}
+
 function CashView({
   cash,
   year,
@@ -2946,7 +2984,7 @@ function CashView({
       draft.selectedYear = targetYear;
     });
   };
-  const changeObjective = (index: number, key: string, value: string) =>
+  const changeObjective = (index: number, key: string, value: string | number) =>
     applyCash((draft) => {
       const row = draft.objectives?.[index];
       if (!row) return;
@@ -2957,7 +2995,7 @@ function CashView({
       }
       row.simulationAdd = monthlyObjectiveAdd(row);
     });
-  const changePlan = (index: number, month: string, value: string, comment?: string) =>
+  const changePlan = (index: number, month: string, value: string | number, comment?: string) =>
     applyCash((draft) => {
       const row = draft.plan?.[index];
       if (!row) return;
@@ -2966,7 +3004,7 @@ function CashView({
       if (comment != null) row.comments[month] = comment;
       else row.values[month] = toNumber(value);
     });
-  const changeAccount = (index: number, month: string, value: string, comment?: string) =>
+  const changeAccount = (index: number, month: string, value: string | number, comment?: string) =>
     applyCash((draft) => {
       const row = draft.accounts?.[index];
       if (!row) return;
@@ -3056,7 +3094,11 @@ function CashView({
                   })
                 }
               />,
-              <input value={formatInputNumber(account.values?.[activeMonth] ?? 0)} onChange={(event) => changeAccount(index, activeMonth, event.target.value)} inputMode="decimal" />,
+              <LocaleNumberInput
+                ariaLabel={`Saldo ${account.name}`}
+                value={account.values?.[activeMonth] ?? 0}
+                onValueChange={(value) => changeAccount(index, activeMonth, value)}
+              />,
             ])}
           />
         </div>
@@ -3077,7 +3119,11 @@ function CashView({
                   })
                 }
               />,
-              <input value={formatInputNumber(row.values?.[activeMonth] ?? 0)} onChange={(event) => changePlan(index, activeMonth, event.target.value)} inputMode="decimal" />,
+              <LocaleNumberInput
+                ariaLabel={`Importe ${row.name}`}
+                value={row.values?.[activeMonth] ?? 0}
+                onValueChange={(value) => changePlan(index, activeMonth, value)}
+              />,
             ])}
           />
         </div>
@@ -3094,8 +3140,8 @@ function CashView({
           totalColumns={[{ index: 1, format: "money" }, { index: 2, format: "money" }, { index: 4, format: "money" }]}
           rows={objectives.map((row, index) => [
             <input value={row.name} onChange={(event) => changeObjective(index, "name", event.target.value)} />,
-            <input value={formatInputNumber(row.current ?? 0)} onChange={(event) => changeObjective(index, "current", event.target.value)} inputMode="decimal" />,
-            <input value={formatInputNumber(row.target ?? 0)} onChange={(event) => changeObjective(index, "target", event.target.value)} inputMode="decimal" />,
+            <LocaleNumberInput ariaLabel={`Actual ${row.name}`} value={row.current ?? 0} onValueChange={(value) => changeObjective(index, "current", value)} />,
+            <LocaleNumberInput ariaLabel={`Meta ${row.name}`} value={row.target ?? 0} onValueChange={(value) => changeObjective(index, "target", value)} />,
             <input value={row.targetDate ?? ""} onChange={(event) => changeObjective(index, "targetDate", event.target.value)} placeholder="YYYY-MM" />,
             formatMoney(monthlyObjectiveAdd(row)),
             <button
@@ -3164,7 +3210,11 @@ function CashView({
                   </td>
                   {months.map((month) => (
                     <td key={month.key}>
-                      <input value={formatInputNumber(row.values?.[month.key] ?? 0)} onChange={(event) => changePlan(index, month.key, event.target.value)} inputMode="decimal" />
+                      <LocaleNumberInput
+                        ariaLabel={`${row.name} ${month.label ?? month.key}`}
+                        value={row.values?.[month.key] ?? 0}
+                        onValueChange={(value) => changePlan(index, month.key, value)}
+                      />
                       <input
                         className="comment-input"
                         value={row.comments?.[month.key] ?? ""}
@@ -3232,7 +3282,11 @@ function CashView({
                   </td>
                   {months.map((month) => (
                     <td key={month.key}>
-                      <input value={formatInputNumber(account.values?.[month.key] ?? 0)} onChange={(event) => changeAccount(index, month.key, event.target.value)} inputMode="decimal" />
+                      <LocaleNumberInput
+                        ariaLabel={`${account.name} ${month.label ?? month.key}`}
+                        value={account.values?.[month.key] ?? 0}
+                        onValueChange={(value) => changeAccount(index, month.key, value)}
+                      />
                       <input
                         className="comment-input"
                         value={account.comments?.[month.key] ?? ""}
@@ -3272,7 +3326,7 @@ function PropertyView({
   const latestFamilyDebt = propertyFamilyDebt(latest);
   const latestEquity = propertyEquity(latest);
   const replaceRows = (nextRows: Array<Record<string, string | number | null>>) => onChange(nextRows.map(normalizePropertyRow));
-  const updateRow = (index: number, key: string, value: string) => {
+  const updateRow = (index: number, key: string, value: string | number) => {
     replaceRows(rows.map((row, rowIndex) => (rowIndex === index ? { ...row, [key]: key === "date" ? value : toNumber(value) } : row)));
   };
   const addRow = () => {
@@ -3312,9 +3366,9 @@ function PropertyView({
           columns={["Fecha", "Valor piso", "Hipoteca", "Deuda familiar", "Equity calculado", ""]}
           rows={rows.map((row, index) => [
             <input value={String(row.date ?? "")} onChange={(event) => updateRow(index, "date", event.target.value)} type="date" />,
-            <input value={formatInputNumber(propertyValue(row))} onChange={(event) => updateRow(index, "propertyValue", event.target.value)} inputMode="decimal" />,
-            <input value={formatInputNumber(propertyMortgage(row))} onChange={(event) => updateRow(index, "mortgage", event.target.value)} inputMode="decimal" />,
-            <input value={formatInputNumber(propertyFamilyDebt(row))} onChange={(event) => updateRow(index, "familyDebt", event.target.value)} inputMode="decimal" />,
+            <LocaleNumberInput ariaLabel={`Valor piso ${String(row.date ?? "")}`} value={propertyValue(row)} onValueChange={(value) => updateRow(index, "propertyValue", value)} />,
+            <LocaleNumberInput ariaLabel={`Hipoteca ${String(row.date ?? "")}`} value={propertyMortgage(row)} onValueChange={(value) => updateRow(index, "mortgage", value)} />,
+            <LocaleNumberInput ariaLabel={`Deuda familiar ${String(row.date ?? "")}`} value={propertyFamilyDebt(row)} onValueChange={(value) => updateRow(index, "familyDebt", value)} />,
             formatMoney(propertyEquity(row)),
             <button className="ghost danger" onClick={() => deleteRow(index)}>
               Borrar
@@ -5049,6 +5103,10 @@ function formatInputNumber(value: string | number | null | undefined) {
 }
 
 function parseLocaleNumber(value: string | number | null | undefined) {
+  return parseLocaleNumberOrNull(value) ?? 0;
+}
+
+function parseLocaleNumberOrNull(value: string | number | null | undefined) {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   const raw = String(value ?? "")
     .trim()
@@ -5060,16 +5118,24 @@ function parseLocaleNumber(value: string | number | null | undefined) {
   const lastDot = raw.lastIndexOf(".");
   let normalized = raw;
   if (lastComma >= 0 && lastDot >= 0) {
-    normalized = lastComma > lastDot ? raw.replace(/\./g, "").replace(",", ".") : raw.replace(/,/g, "");
+    if (lastComma > lastDot) {
+      normalized = `${raw.slice(0, lastComma).replace(/[.,]/g, "")}.${raw.slice(lastComma + 1).replace(/[.,]/g, "")}`;
+    } else {
+      normalized = `${raw.slice(0, lastDot).replace(/[.,]/g, "")}.${raw.slice(lastDot + 1).replace(/[.,]/g, "")}`;
+    }
   } else if (lastComma >= 0) {
-    const decimals = raw.length - lastComma - 1;
-    normalized = decimals === 3 && raw.slice(0, lastComma).length > 0 ? raw.replace(/,/g, "") : raw.replace(",", ".");
+    normalized = `${raw.slice(0, lastComma).replace(/,/g, "")}.${raw.slice(lastComma + 1)}`;
   } else if (lastDot >= 0) {
     const decimals = raw.length - lastDot - 1;
-    normalized = decimals === 3 && raw.slice(0, lastDot).length > 0 ? raw.replace(/\./g, "") : raw;
+    const groups = raw.replace(/^-/, "").split(".");
+    const isGroupedThousands = groups.length > 2 && groups.slice(1).every((group) => group.length === 3);
+    normalized = isGroupedThousands || (groups.length === 2 && decimals === 3 && groups[0].length > 0)
+      ? raw.replace(/\./g, "")
+      : `${raw.slice(0, lastDot).replace(/\./g, "")}.${raw.slice(lastDot + 1)}`;
   }
-  const match = normalized.match(/-?\d+(?:\.\d+)?/);
-  return match ? Number(match[0]) : 0;
+  if (!/^-?\d+(?:\.\d*)?$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 async function digest(value: string) {
