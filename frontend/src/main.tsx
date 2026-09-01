@@ -1426,6 +1426,7 @@ function App() {
           summary={wealthSummary}
           month={wealthMonth}
           setMonth={setWealthMonth}
+          cash={cash}
           positions={enrichedPositions}
           onChange={(nextRows, nextSummary) => patchLegacyAppState({ wealth_rows: nextRows, wealth_summary: nextSummary })}
           onSave={() => saveLegacyAppState()}
@@ -3385,6 +3386,7 @@ function WealthView({
   summary,
   month,
   setMonth,
+  cash,
   positions,
   onChange,
   onSave,
@@ -3394,6 +3396,7 @@ function WealthView({
   summary: WealthRow[];
   month: string;
   setMonth: (value: string) => void;
+  cash?: LegacyCash;
   positions: Array<Position & { symbol: string; marketValue: number; costBasis: number; latentGain: number; dailyGain: number }>;
   onChange: (rows: WealthRow[], summary: WealthRow[]) => void;
   onSave: () => void;
@@ -3403,18 +3406,21 @@ function WealthView({
   const months = [...new Set(rows.map((row) => monthKey(row.Fecha)).filter(Boolean))].sort();
   const selectedMonth = month || months.at(-1) || "";
   const monthRows = rows.filter((row) => monthKey(row.Fecha) === selectedMonth);
-  const currentSummary = summary.find((row) => monthKey(row.Mes) === selectedMonth) ?? summary.at(-1);
+  const currentSummary = selectedMonth
+    ? summary.find((row) => monthKey(row.Mes) === selectedMonth)
+    : summary.at(-1);
   const selectedDate = selectedMonth ? monthEndDate(selectedMonth) : new Date().toISOString().slice(0, 10);
-  const stockPositions = positions.filter((row) => row.asset_type === "stock");
-  const stockCost = stockPositions.reduce((acc, row) => acc + row.costBasis, 0);
-  const stockMarket = stockPositions.reduce((acc, row) => acc + row.marketValue, 0);
-  const stockGain = stockMarket - stockCost;
-  const actionsRow = monthRows.find((row) => String(row.Tipo ?? "").trim().toLowerCase() === "acciones");
-  const actionsImputedCost = toNumber(actionsRow?.["Valor aportaciones"] ?? 0);
-  const actionsImputedMarket = toNumber(actionsRow?.["Valor mercado"] ?? 0);
-  const actionsMarketDelta = stockMarket - actionsImputedMarket;
+  const investmentPositions = positions.filter((row) => ["stock", "etf", "fund"].includes(row.asset_type));
+  const investmentCost = investmentPositions.reduce((acc, row) => acc + row.costBasis, 0);
+  const investmentMarket = investmentPositions.reduce((acc, row) => acc + row.marketValue, 0);
+  const investmentRow = monthRows.find((row) => ["acciones", "inversiones"].includes(String(row.Tipo ?? "").trim().toLowerCase()));
+  const investmentImputedCost = toNumber(investmentRow?.["Valor aportaciones"] ?? 0);
+  const investmentImputedMarket = toNumber(investmentRow?.["Valor mercado"] ?? 0);
+  const investmentMarketDelta = investmentMarket - investmentImputedMarket;
+  const cashAccountsForMonth = (cash?.accounts ?? []).filter((account) => Object.prototype.hasOwnProperty.call(account.values ?? {}, selectedMonth));
+  const cashMarketForMonth = cashAccountsForMonth.reduce((acc, account) => acc + toNumber(account.values?.[selectedMonth] ?? 0), 0);
   const updateRows = (nextRows: WealthRow[]) => onChange(nextRows, recomputeWealthSummary(nextRows));
-  const updateMonthRow = (rowIndex: number, key: string, value: string) => {
+  const updateMonthRow = (rowIndex: number, key: string, value: string | number) => {
     const absoluteIndex = rows.findIndex((row) => row === monthRows[rowIndex]);
     if (absoluteIndex < 0) return;
     const next = rows.map((row, index) =>
@@ -3445,30 +3451,70 @@ function WealthView({
   };
   const applySelectedDate = (nextMonth: string) => {
     setMonth(nextMonth);
-    const nextDate = monthEndDate(nextMonth);
-    const next = rows.map((row) =>
-      monthKey(row.Fecha) === selectedMonth
-        ? { ...row, Fecha: nextDate, Mes: Number(nextMonth.slice(5, 7)), "Año": Number(nextMonth.slice(0, 4)), Code: `${nextMonth.slice(5, 7)}/${nextMonth.slice(0, 4)}` }
-        : row
-    );
-    updateRows(next);
   };
-  const syncActionsFromDashboard = () => {
-    const existingIndex = rows.findIndex((row) => monthKey(row.Fecha) === selectedMonth && String(row.Tipo ?? "").trim().toLowerCase() === "acciones");
-    const row = {
-      Tipo: "Acciones",
-      "Liquido / No": "No",
-      Fecha: selectedDate,
-      Mes: Number(selectedMonth.slice(5, 7)),
-      "Año": Number(selectedMonth.slice(0, 4)),
-      Code: `${selectedMonth.slice(5, 7)}/${selectedMonth.slice(0, 4)}`,
-      "Valor aportaciones": stockCost,
-      "Valor mercado": stockMarket,
-      "Dividendos recibidos": 0,
-      "Dividendos recibidos en el mes": 0,
-      Rendimiento: stockCost ? stockMarket / stockCost - 1 : 0,
-    };
-    updateRows(existingIndex >= 0 ? rows.map((item, index) => (index === existingIndex ? { ...item, ...row } : item)) : [...rows, row]);
+  const investmentRowForMonth = {
+    Tipo: "Inversiones",
+    "Liquido / No": "No",
+    Fecha: selectedDate,
+    Mes: Number(selectedMonth.slice(5, 7)),
+    "Año": Number(selectedMonth.slice(0, 4)),
+    Code: `${selectedMonth.slice(5, 7)}/${selectedMonth.slice(0, 4)}`,
+    "Valor aportaciones": investmentCost,
+    "Valor mercado": investmentMarket,
+    Rendimiento: investmentCost ? investmentMarket / investmentCost - 1 : 0,
+    Origen: "portfolio",
+  };
+
+  const upsertInvestments = (sourceRows: WealthRow[]) => {
+    const existingIndex = sourceRows.findIndex(
+      (row) => monthKey(row.Fecha) === selectedMonth && ["acciones", "inversiones"].includes(String(row.Tipo ?? "").trim().toLowerCase())
+    );
+    return existingIndex >= 0
+      ? sourceRows.map((item, index) => (index === existingIndex ? { ...item, ...investmentRowForMonth } : item))
+      : [...sourceRows, { "Dividendos recibidos": 0, "Dividendos recibidos en el mes": 0, ...investmentRowForMonth }];
+  };
+
+  const upsertCashAccounts = (sourceRows: WealthRow[]) => {
+    let nextRows = sourceRows.map((row) => (monthKey(row.Fecha) === selectedMonth ? { ...row, Fecha: selectedDate } : row));
+    for (const account of cashAccountsForMonth) {
+      const amount = toNumber(account.values?.[selectedMonth] ?? 0);
+      const aliases = wealthCashAccountAliases(account.name);
+      const existingIndex = nextRows.findIndex(
+        (row) =>
+          monthKey(row.Fecha) === selectedMonth &&
+          (aliases.includes(normalizeSearchText(String(row.Tipo ?? ""))) ||
+            normalizeSearchText(String(row["Cuenta cash"] ?? "")) === normalizeSearchText(account.name))
+      );
+      const cashRow: WealthRow = {
+        Tipo: existingIndex >= 0 ? String(nextRows[existingIndex].Tipo ?? account.name) : cashAccountWealthLabel(account.name),
+        "Liquido / No": "Si",
+        Fecha: selectedDate,
+        Mes: Number(selectedMonth.slice(5, 7)),
+        "Año": Number(selectedMonth.slice(0, 4)),
+        Code: `${selectedMonth.slice(5, 7)}/${selectedMonth.slice(0, 4)}`,
+        "Valor aportaciones": amount,
+        "Valor mercado": amount,
+        Rendimiento: 0,
+        Origen: "cash",
+        "Cuenta cash": account.name,
+      };
+      nextRows = existingIndex >= 0
+        ? nextRows.map((item, index) => (index === existingIndex ? { ...item, ...cashRow } : item))
+        : [...nextRows, { "Dividendos recibidos": 0, "Dividendos recibidos en el mes": 0, ...cashRow }];
+    }
+    return nextRows;
+  };
+
+  const syncInvestmentsFromPortfolio = () => {
+    if (selectedMonth) updateRows(upsertInvestments(rows));
+  };
+  const syncCashFromMonth = () => {
+    if (selectedMonth) updateRows(upsertCashAccounts(rows));
+  };
+  const reconcileMonth = () => {
+    if (!selectedMonth) return;
+    const normalizedRows = rows.map((row) => (monthKey(row.Fecha) === selectedMonth ? { ...row, Fecha: selectedDate } : row));
+    updateRows(upsertCashAccounts(upsertInvestments(normalizedRows)));
   };
   const copyPreviousMonth = () => {
     const previousMonth = months.filter((item) => item < selectedMonth).at(-1);
@@ -3488,7 +3534,7 @@ function WealthView({
           <div className="toolbar">
             <input type="month" value={selectedMonth} onChange={(event) => applySelectedDate(event.target.value)} />
             <button onClick={copyPreviousMonth}>Copiar mes anterior</button>
-            <button onClick={syncActionsFromDashboard}>Actualizar acciones desde dashboard</button>
+            <button className="primary" onClick={reconcileMonth} disabled={!selectedMonth}>Conciliar mes desde Portfolio + Cash</button>
             <button onClick={addType}>Anadir tipo</button>
             <button onClick={onSave} disabled={saving}>
               {saving ? "Guardando" : "Guardar patrimonio"}
@@ -3498,8 +3544,8 @@ function WealthView({
         <div className="summary-grid compact">
           <Metric label="Valor mercado periodo" value={formatMoney(toNumber(currentSummary?.["Total valor mercado"] ?? 0))} />
           <Metric label="Aportaciones periodo" value={formatMoney(toNumber(currentSummary?.["total aportaciones"] ?? 0))} />
-          <Metric label="Acciones calculadas" value={formatMoney(stockMarket)} />
-          <Metric label="Diferencia acciones" value={formatMoney(actionsMarketDelta)} tone={Math.abs(actionsMarketDelta) < 1 ? "good" : "bad"} />
+          <Metric label="Inversiones calculadas" value={formatMoney(investmentMarket)} />
+          <Metric label="Cash del mes" value={formatMoney(cashMarketForMonth)} />
         </div>
       </section>
       <SectionTabs
@@ -3524,21 +3570,25 @@ function WealthView({
       <>
       <section className="panel">
         <div className="panel-header">
-          <h2>Conciliacion de acciones</h2>
-          <button onClick={syncActionsFromDashboard}>Usar calculo en patrimonio</button>
+          <h2>Conciliacion de inversiones y cash</h2>
+          <div className="toolbar">
+            <button onClick={syncInvestmentsFromPortfolio} disabled={!selectedMonth}>Traer inversiones</button>
+            <button onClick={syncCashFromMonth} disabled={!selectedMonth || !cashAccountsForMonth.length}>Traer cuentas de Cash</button>
+          </div>
         </div>
         <div className="summary-grid compact">
-          <Metric label="Coste dashboard" value={formatMoney(stockCost)} />
-          <Metric label="Mercado dashboard" value={formatMoney(stockMarket)} />
-          <Metric label="Mercado imputado" value={formatMoney(actionsImputedMarket)} />
-          <Metric label="Diferencia" value={formatMoney(actionsMarketDelta)} tone={Math.abs(actionsMarketDelta) < 1 ? "good" : "bad"} />
+          <Metric label="Coste inversiones" value={formatMoney(investmentCost)} />
+          <Metric label="Mercado inversiones" value={formatMoney(investmentMarket)} />
+          <Metric label="Mercado imputado" value={formatMoney(investmentImputedMarket)} />
+          <Metric label="Diferencia" value={formatMoney(investmentMarketDelta)} tone={Math.abs(investmentMarketDelta) < 1 ? "good" : "bad"} />
         </div>
         <SimpleTable
-          columns={["Ticker", "Activo", "Broker", "Coste", "Mercado", "P&G"]}
-          totalColumns={[{ index: 3, format: "money" }, { index: 4, format: "money" }, { index: 5, format: "money" }]}
-          rows={stockPositions.map((row) => [
+          columns={["Ticker", "Activo", "Tipo", "Broker", "Coste", "Mercado", "P&G"]}
+          totalColumns={[{ index: 4, format: "money" }, { index: 5, format: "money" }, { index: 6, format: "money" }]}
+          rows={investmentPositions.map((row) => [
             row.symbol,
             row.name,
+            assetTypeLabel(row.asset_type),
             row.broker,
             formatMoney(row.costBasis),
             formatMoney(row.marketValue),
@@ -3546,7 +3596,7 @@ function WealthView({
           ])}
         />
         <p className="muted">
-          Acciones imputadas en patrimonio: coste {formatMoney(actionsImputedCost)}, mercado {formatMoney(actionsImputedMarket)}. El boton actualiza o crea la fila "Acciones" del periodo seleccionado.
+          La fila Inversiones incluye acciones, ETF y fondos: coste imputado {formatMoney(investmentImputedCost)}, mercado imputado {formatMoney(investmentImputedMarket)}. Cash tiene {cashAccountsForMonth.length} cuentas disponibles para {selectedMonth || "el periodo"}.
         </p>
       </section>
       <section className="panel">
@@ -3560,10 +3610,10 @@ function WealthView({
           rows={monthRows.map((row, index) => [
             <input value={String(row.Tipo ?? "")} onChange={(event) => updateMonthRow(index, "Tipo", event.target.value)} />,
             <input value={String(row["Liquido / No"] ?? "")} onChange={(event) => updateMonthRow(index, "Liquido / No", event.target.value)} />,
-            <input value={formatInputNumber(row["Valor aportaciones"] ?? 0)} onChange={(event) => updateMonthRow(index, "Valor aportaciones", event.target.value)} inputMode="decimal" />,
-            <input value={formatInputNumber(row["Valor mercado"] ?? 0)} onChange={(event) => updateMonthRow(index, "Valor mercado", event.target.value)} inputMode="decimal" />,
-            <input value={formatInputNumber(row["Dividendos recibidos"] ?? 0)} onChange={(event) => updateMonthRow(index, "Dividendos recibidos", event.target.value)} inputMode="decimal" />,
-            <input value={formatInputNumber(row.Rendimiento ?? 0)} onChange={(event) => updateMonthRow(index, "Rendimiento", event.target.value)} inputMode="decimal" />,
+            <LocaleNumberInput ariaLabel={`Aportaciones ${String(row.Tipo ?? "")}`} value={row["Valor aportaciones"] ?? 0} onValueChange={(value) => updateMonthRow(index, "Valor aportaciones", value)} />,
+            <LocaleNumberInput ariaLabel={`Mercado ${String(row.Tipo ?? "")}`} value={row["Valor mercado"] ?? 0} onValueChange={(value) => updateMonthRow(index, "Valor mercado", value)} />,
+            <LocaleNumberInput ariaLabel={`Dividendos ${String(row.Tipo ?? "")}`} value={row["Dividendos recibidos"] ?? 0} onValueChange={(value) => updateMonthRow(index, "Dividendos recibidos", value)} />,
+            <LocaleNumberInput ariaLabel={`Rendimiento ${String(row.Tipo ?? "")}`} value={row.Rendimiento ?? 0} onValueChange={(value) => updateMonthRow(index, "Rendimiento", value)} />,
           ])}
         />
       </section>
@@ -4847,6 +4897,27 @@ function cloneCash(cash?: LegacyCash): LegacyCash {
   };
 }
 
+function wealthCashAccountAliases(accountName: string) {
+  const normalized = normalizeSearchText(accountName);
+  const aliases: Record<string, string[]> = {
+    broker: ["broker", "efectivo broker"],
+    bankinter: ["bankinter"],
+    myinvestor: ["myinvestor"],
+    revolut: ["revolut"],
+    sabadell: ["sabadell"],
+    "sabadell ahorro": ["sabadell ahorro"],
+    "trade republic": ["trade republic"],
+  };
+  return [...new Set([normalized, ...(aliases[normalized] ?? [])])];
+}
+
+function cashAccountWealthLabel(accountName: string) {
+  const normalized = normalizeSearchText(accountName);
+  if (normalized === "broker") return "Efectivo broker";
+  const clean = accountName.trim();
+  return clean ? `${clean.charAt(0).toLocaleUpperCase("es")}${clean.slice(1)}` : "Cuenta cash";
+}
+
 function ensureCashYear(cash: LegacyCash, year: number) {
   const labels = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
   cash.months = cash.months ?? [];
@@ -4886,7 +4957,7 @@ function monthlyObjectiveAdd(row: NonNullable<LegacyCash["objectives"]>[number])
 
 function monthEndDate(month: string) {
   const [year, monthNumber] = month.split("-").map(Number);
-  return new Date(year, monthNumber, 0).toISOString().slice(0, 10);
+  return new Date(Date.UTC(year, monthNumber, 0)).toISOString().slice(0, 10);
 }
 
 function isWealthNumericField(key: string) {
