@@ -218,6 +218,21 @@ OPENAI_API_KEY
 BRAVE_SEARCH_API_KEY
 ```
 
+## Mantenimiento Del Proyecto Gratuito
+
+El workflow `.github/workflows/keep_supabase_active.yml` ejecuta cada dia tres
+consultas minimas de solo lectura a Supabase. Su unica finalidad es generar
+actividad de base de datos para reducir el riesgo de pausa por inactividad:
+
+- no escribe ni modifica datos;
+- no actualiza precios;
+- no utiliza Brave ni OpenAI;
+- tambien puede lanzarse manualmente desde GitHub Actions.
+
+Los refrescos de precios, calendario e informes permanecen bajo ejecucion manual.
+En el plan gratuito este mantenimiento reduce el riesgo, pero la unica garantia
+oficial contra pausas automaticas es utilizar un plan de pago.
+
 Opcionalmente crear como `Actions variable`:
 
 ```text

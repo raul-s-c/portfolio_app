@@ -1,0 +1,48 @@
+name: Keep Supabase active
+
+on:
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/keep_supabase_active.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-supabase-active
+  cancel-in-progress: false
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - name: Run read-only database heartbeat
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          API_KEY="${SUPABASE_SECRET_KEY:-$SUPABASE_SERVICE_ROLE_KEY}"
+          test -n "$SUPABASE_URL" || (echo "Missing GitHub secret SUPABASE_URL" && exit 1)
+          test -n "$API_KEY" || (echo "Missing GitHub secret SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY" && exit 1)
+
+          for table in brokers assets price_snapshots; do
+            curl --silent --show-error --fail-with-body \
+              --get "${SUPABASE_URL%/}/rest/v1/${table}" \
+              --data-urlencode "select=id" \
+              --data-urlencode "limit=1" \
+              --header "apikey: ${API_KEY}" \
+              --header "Authorization: Bearer ${API_KEY}" \
+              --output /dev/null
+          done
+
+          echo "Supabase read-only heartbeat completed."
