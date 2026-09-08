@@ -508,6 +508,28 @@ function compactReportPositions(context: Dict) {
   });
 }
 
+function compactVirtualAssignments(assignments: Dict[]) {
+  const grouped = new Map<string, Dict>();
+  for (const assignment of assignments) {
+    const key = `${assignment.virtual_portfolio_id}:${assignment.asset_id}`;
+    const current = grouped.get(key) || {
+      virtual_portfolio_id: assignment.virtual_portfolio_id,
+      asset_id: assignment.asset_id,
+      broker_ids: [],
+      target_weight: null,
+      notes: assignment.notes || null,
+    };
+    const brokerIds = current.broker_ids as string[];
+    const brokerId = String(assignment.broker_id || "");
+    if (brokerId && !brokerIds.includes(brokerId)) brokerIds.push(brokerId);
+    if (assignment.target_weight != null) {
+      current.target_weight = Math.max(Number(current.target_weight || 0), Number(assignment.target_weight || 0));
+    }
+    grouped.set(key, current);
+  }
+  return [...grouped.values()];
+}
+
 async function collectReportSearch(reportType: string, positions: Dict[]) {
   if (!BRAVE_SEARCH_API_KEY) throw new Error("BRAVE_SEARCH_API_KEY missing");
   const coreQueries =
@@ -573,6 +595,11 @@ async function generateReport(payload: Dict) {
   }
   const context = await loadReportContext();
   const positions = compactReportPositions(context);
+  const reportContext = {
+    ...context,
+    assignments: compactVirtualAssignments((context.assignments as Dict[]) || []),
+    positions,
+  };
   const webContext = await collectReportSearch(reportType, positions);
   const today = new Date().toISOString().slice(0, 10);
   const focus =
@@ -583,7 +610,7 @@ async function generateReport(payload: Dict) {
         : "Analiza cartera actual por grupos: acciones, ETF y fondos, incluyendo concentracion, moneda, broker, P&G latente y riesgos principales.";
   const prompt =
     `${focus}\nFecha: ${today}\n\n` +
-    `Contexto de cartera:\n${JSON.stringify({ ...context, positions }, null, 2)}\n\n` +
+    `Contexto de cartera:\n${JSON.stringify(reportContext, null, 2)}\n\n` +
     `Resultados Brave:\n${JSON.stringify(webContext, null, 2)}\n\n` +
     "Devuelve: 1) resumen ejecutivo, 2) lectura por grupo o ETF, 3) riesgos y oportunidades, 4) datos que faltan para mejorar la precision.";
   const content = await callOpenAIReport(reportType, prompt);
@@ -595,7 +622,7 @@ async function generateReport(payload: Dict) {
       period_start: today,
       period_end: today,
       prompt,
-      portfolio_context: { ...context, positions },
+      portfolio_context: reportContext,
       web_context: webContext,
       content_markdown: content,
       model: OPENAI_MODEL,

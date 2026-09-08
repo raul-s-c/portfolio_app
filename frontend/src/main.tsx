@@ -716,36 +716,42 @@ function App() {
     await loadDashboardData();
   }
 
-  async function saveVirtualAssignment(assetId: string, brokerId: string, virtualPortfolioId: string, targetWeight: string, notes: string) {
+  async function saveVirtualAssignment(assetId: string, virtualPortfolioId: string, targetWeight: string, notes: string) {
     if (!session) {
       setMessage("Entra con tu email antes de asignar activos.");
       return;
     }
     if (!virtualPortfolioId) {
-      const { error } = await supabase.from("virtual_portfolio_assignments").delete().eq("asset_id", assetId).eq("broker_id", brokerId);
+      const { error } = await supabase.from("virtual_portfolio_assignments").delete().eq("asset_id", assetId);
       if (error) {
         setMessage(friendlySupabaseError(error.message));
         return;
       }
-      setMessage("Asignacion eliminada.");
+      setMessage("Activo eliminado de la cartera virtual en todos los brokers.");
       await loadDashboardData();
       return;
     }
+    const assetPositions = positions.filter((position) => position.asset_id === assetId);
+    if (!assetPositions.length) {
+      setMessage("No hay posiciones abiertas de este activo.");
+      return;
+    }
+    const normalizedTarget = targetWeight.trim() ? parseLocaleNumber(targetWeight) / 100 : null;
     const { error } = await supabase.from("virtual_portfolio_assignments").upsert(
-      {
+      assetPositions.map((position) => ({
         asset_id: assetId,
-        broker_id: brokerId,
+        broker_id: position.broker_id,
         virtual_portfolio_id: virtualPortfolioId,
-        target_weight: targetWeight.trim() ? parseLocaleNumber(targetWeight) / 100 : null,
+        target_weight: normalizedTarget,
         notes: notes.trim() || null,
-      },
+      })),
       { onConflict: "asset_id,broker_id" }
     );
     if (error) {
       setMessage(friendlySupabaseError(error.message));
       return;
     }
-    setMessage("Asignacion guardada.");
+    setMessage(`Asignacion guardada para ${assetPositions.length} broker${assetPositions.length === 1 ? "" : "s"}.`);
     await loadDashboardData();
   }
 
@@ -3731,7 +3737,7 @@ function VirtualPortfoliosView({
   assignments: VirtualPortfolioAssignment[];
   dividends: EnrichedDividend[];
   onCreatePortfolio: (name: string, strategyId: string) => void;
-  onSaveAssignment: (assetId: string, brokerId: string, virtualPortfolioId: string, targetWeight: string, notes: string) => void;
+  onSaveAssignment: (assetId: string, virtualPortfolioId: string, targetWeight: string, notes: string) => void;
 }) {
   const [newName, setNewName] = useState("");
   const [newStrategyId, setNewStrategyId] = useState(strategies[0]?.id ?? "");
@@ -3739,24 +3745,6 @@ function VirtualPortfoliosView({
   const [simulatedPortfolioId, setSimulatedPortfolioId] = useState(virtualPortfolios[0]?.id ?? "");
   const [simulatedAmount, setSimulatedAmount] = useState("500");
   const [simulatedMaxPurchases, setSimulatedMaxPurchases] = useState("3");
-
-  useEffect(() => {
-    setDrafts(
-      Object.fromEntries(
-        positions.map((position) => {
-          const assignment = assignments.find((row) => row.asset_id === position.asset_id && row.broker_id === position.broker_id);
-          return [
-            `${position.asset_id}:${position.broker_id}`,
-            {
-              portfolioId: assignment?.virtual_portfolio_id ?? "",
-              targetWeight: assignment?.target_weight != null ? formatInputNumber(toNumber(assignment.target_weight) * 100) : "",
-              notes: assignment?.notes ?? "",
-            },
-          ];
-        })
-      )
-    );
-  }, [positions, assignments]);
 
   useEffect(() => {
     if (!virtualPortfolios.some((portfolio) => portfolio.id === simulatedPortfolioId)) {
@@ -3773,6 +3761,57 @@ function VirtualPortfoliosView({
     }
     return totals;
   }, [dividends]);
+  const positionsByAsset = useMemo(() => {
+    const grouped = new Map<string, {
+      assetId: string;
+      symbol: string;
+      name: string;
+      positions: typeof positions;
+      brokers: string[];
+      marketValue: number;
+      dividends: number;
+    }>();
+    for (const position of positions) {
+      const current = grouped.get(position.asset_id) ?? {
+        assetId: position.asset_id,
+        symbol: position.symbol,
+        name: position.name,
+        positions: [],
+        brokers: [],
+        marketValue: 0,
+        dividends: 0,
+      };
+      current.positions.push(position);
+      if (!current.brokers.includes(position.broker)) current.brokers.push(position.broker);
+      current.marketValue += position.marketValue;
+      current.dividends += dividendsByPosition.get(`${position.asset_id}:${position.broker_id}`) ?? 0;
+      grouped.set(position.asset_id, current);
+    }
+    return [...grouped.values()].sort((left, right) => right.marketValue - left.marketValue);
+  }, [positions, dividendsByPosition]);
+
+  useEffect(() => {
+    setDrafts(
+      Object.fromEntries(
+        positionsByAsset.map((group) => {
+          const assetAssignments = assignments.filter((row) => row.asset_id === group.assetId);
+          const portfolioIds = [...new Set(assetAssignments.map((row) => row.virtual_portfolio_id))];
+          const target = assetAssignments.reduce<number | null>((result, row) => {
+            if (row.target_weight == null) return result;
+            return result == null ? toNumber(row.target_weight) : Math.max(result, toNumber(row.target_weight));
+          }, null);
+          return [
+            group.assetId,
+            {
+              portfolioId: portfolioIds.length === 1 ? portfolioIds[0] : "",
+              targetWeight: target != null ? formatInputNumber(target * 100) : "",
+              notes: assetAssignments.find((row) => row.notes)?.notes ?? "",
+            },
+          ];
+        })
+      )
+    );
+  }, [positionsByAsset, assignments]);
   const portfolioSummary = virtualPortfolios.map((portfolio) => {
     const memberKeys = new Set(
       assignments
@@ -3783,37 +3822,59 @@ function VirtualPortfoliosView({
     const marketValue = members.reduce((acc, row) => acc + row.marketValue, 0);
     const costBasis = members.reduce((acc, row) => acc + row.costBasis, 0);
     const accumulatedDividends = [...memberKeys].reduce((acc, key) => acc + (dividendsByPosition.get(key) ?? 0), 0);
-    return { portfolio, members, marketValue, costBasis, latentGain: marketValue - costBasis, accumulatedDividends };
+    const assetCount = new Set(members.map((position) => position.asset_id)).size;
+    return { portfolio, members, assetCount, marketValue, costBasis, latentGain: marketValue - costBasis, accumulatedDividends };
   });
   const contributionPlan = useMemo(() => {
     const amount = Math.max(0, parseLocaleNumber(simulatedAmount));
     const maxPurchases = Math.max(1, Math.min(50, Math.trunc(toNumber(simulatedMaxPurchases) || 1)));
-    const members = assignments
-      .filter((assignment) => assignment.virtual_portfolio_id === simulatedPortfolioId)
-      .map((assignment) => ({
-        assignment,
-        position: positions.find((position) => position.asset_id === assignment.asset_id && position.broker_id === assignment.broker_id),
-      }))
-      .filter((row): row is { assignment: VirtualPortfolioAssignment; position: (typeof positions)[number] } => Boolean(row.position));
+    const memberMap = new Map<string, {
+      assetId: string;
+      symbol: string;
+      name: string;
+      brokers: string[];
+      marketValue: number;
+      hasMarketValue: boolean;
+      targetWeight: number;
+    }>();
+    for (const assignment of assignments.filter((row) => row.virtual_portfolio_id === simulatedPortfolioId)) {
+      const position = positions.find((row) => row.asset_id === assignment.asset_id && row.broker_id === assignment.broker_id);
+      if (!position) continue;
+      const current = memberMap.get(assignment.asset_id) ?? {
+        assetId: assignment.asset_id,
+        symbol: position.symbol,
+        name: position.name,
+        brokers: [],
+        marketValue: 0,
+        hasMarketValue: true,
+        targetWeight: 0,
+      };
+      if (!current.brokers.includes(position.broker)) current.brokers.push(position.broker);
+      current.marketValue += position.marketValue;
+      current.hasMarketValue = current.hasMarketValue && position.hasMarketValue;
+      current.targetWeight = Math.max(current.targetWeight, Math.max(0, toNumber(assignment.target_weight)));
+      memberMap.set(assignment.asset_id, current);
+    }
+    const members = [...memberMap.values()];
     if (!members.length) return { rows: [], amount, totalBefore: 0, totalAfter: amount, usesEqualWeights: false, missingValuations: [] as string[] };
 
     const missingValuations = members
-      .filter((row) => !row.position.hasMarketValue)
-      .map((row) => `${row.position.symbol} · ${row.position.broker}`);
-    const totalBefore = members.reduce((acc, row) => acc + row.position.marketValue, 0);
+      .filter((row) => !row.hasMarketValue)
+      .map((row) => `${row.symbol} · ${row.brokers.join(" + ")}`);
+    const totalBefore = members.reduce((acc, row) => acc + row.marketValue, 0);
     if (missingValuations.length) {
       return { rows: [], amount, totalBefore, totalAfter: totalBefore + amount, usesEqualWeights: false, missingValuations };
     }
 
-    const explicitTotal = members.reduce((acc, row) => acc + Math.max(0, toNumber(row.assignment.target_weight)), 0);
-    const missingTargets = members.filter((row) => !(toNumber(row.assignment.target_weight) > 0));
+    const explicitTotal = members.reduce((acc, row) => acc + row.targetWeight, 0);
+    const missingTargets = members.filter((row) => !(row.targetWeight > 0));
     const fallbackTarget = explicitTotal === 0
       ? 1 / members.length
       : missingTargets.length
         ? Math.max(0, 1 - explicitTotal) / missingTargets.length
         : 0;
     const rawTargets = members.map((row) =>
-      toNumber(row.assignment.target_weight) > 0 ? toNumber(row.assignment.target_weight) : fallbackTarget
+      row.targetWeight > 0 ? row.targetWeight : fallbackTarget
     );
     const rawTargetTotal = rawTargets.reduce((acc, value) => acc + value, 0);
     const targets = rawTargets.map((value) => rawTargetTotal > 0 ? value / rawTargetTotal : 1 / members.length);
@@ -3822,7 +3883,7 @@ function VirtualPortfoliosView({
       .map((row, index) => ({
         ...row,
         targetWeight: targets[index],
-        deficit: Math.max(0, targets[index] * totalAfter - row.position.marketValue),
+        deficit: Math.max(0, targets[index] * totalAfter - row.marketValue),
       }))
       .sort((left, right) => right.deficit - left.deficit)
       .slice(0, Math.min(maxPurchases, members.length));
@@ -3834,14 +3895,14 @@ function VirtualPortfoliosView({
         : deficitTotal >= amount && deficitTotal > 0
           ? amount * row.deficit / deficitTotal
           : row.deficit + Math.max(0, amount - deficitTotal) * (chosenTargetTotal > 0 ? row.targetWeight / chosenTargetTotal : 1 / candidates.length);
-      const postValue = row.position.marketValue + allocation;
+      const postValue = row.marketValue + allocation;
       return {
-        key: `${row.position.asset_id}:${row.position.broker_id}`,
-        symbol: row.position.symbol,
-        name: row.position.name,
-        broker: row.position.broker,
-        currentValue: row.position.marketValue,
-        currentWeight: totalBefore > 0 ? row.position.marketValue / totalBefore : 0,
+        key: row.assetId,
+        symbol: row.symbol,
+        name: row.name,
+        broker: row.brokers.join(" + "),
+        currentValue: row.marketValue,
+        currentWeight: totalBefore > 0 ? row.marketValue / totalBefore : 0,
         targetWeight: row.targetWeight,
         allocation,
         postWeight: totalAfter > 0 ? postValue / totalAfter : 0,
@@ -3860,7 +3921,7 @@ function VirtualPortfoliosView({
         </div>
       </section>
       <section className="three-grid">
-        {portfolioSummary.map(({ portfolio, members, marketValue, costBasis, latentGain, accumulatedDividends }) => {
+        {portfolioSummary.map(({ portfolio, assetCount, marketValue, costBasis, latentGain, accumulatedDividends }) => {
           const strategy = portfolio.strategy_id ? strategyById.get(portfolio.strategy_id) : null;
           return (
             <article className="portfolio-card" key={portfolio.id}>
@@ -3872,7 +3933,7 @@ function VirtualPortfoliosView({
                 <Metric label="P&G" value={formatMoney(latentGain)} tone={latentGain >= 0 ? "good" : "bad"} />
                 <Metric label="Rent." value={formatPercent(costBasis ? latentGain / costBasis : 0)} tone={latentGain >= 0 ? "good" : "bad"} />
                 <Metric label="Dividendos netos" value={formatMoney(accumulatedDividends)} />
-                <Metric label="Posiciones" value={members.length} />
+                <Metric label="Activos" value={assetCount} />
               </div>
             </article>
           );
@@ -3910,7 +3971,7 @@ function VirtualPortfoliosView({
         </div>
         {contributionPlan.rows.length ? (
           <SimpleTable
-            columns={["Ticker", "Activo", "Broker", "Valor mercado actual", "Peso actual", "Peso objetivo", "Comprar", "Peso posterior"]}
+            columns={["Ticker", "Activo", "Broker(s)", "Valor mercado actual", "Peso actual", "Peso objetivo", "Comprar", "Peso posterior"]}
             rows={contributionPlan.rows.map((row) => [
               row.symbol,
               row.name,
@@ -3966,22 +4027,26 @@ function VirtualPortfoliosView({
       </form>
       <section className="panel">
         <div className="panel-header">
-          <h2>Asignacion por posicion</h2>
-          <span className="muted-inline">{positions.length} posiciones abiertas</span>
+          <div>
+            <h2>Asignacion por activo</h2>
+            <p className="muted">Un unico peso objetivo se aplica a todas las posiciones del activo, aunque esten en varios brokers.</p>
+          </div>
+          <span className="muted-inline">{positionsByAsset.length} activos · {positions.length} posiciones</span>
         </div>
         <EditableTable
-          columns={["Ticker", "Activo", "Broker", "Valor EUR", "Dividendos netos", "Cartera virtual", "Peso objetivo", "Nota", ""]}
-          totalColumns={[{ index: 3, format: "money" }, { index: 4, format: "money" }]}
-          rows={positions.map((position) => {
-            const key = `${position.asset_id}:${position.broker_id}`;
+          columns={["Ticker", "Activo", "Brokers", "Posiciones", "Valor EUR", "Dividendos netos", "Cartera virtual", "Peso objetivo", "Nota", ""]}
+          totalColumns={[{ index: 4, format: "money" }, { index: 5, format: "money" }]}
+          rows={positionsByAsset.map((group) => {
+            const key = group.assetId;
             const draft = drafts[key] ?? { portfolioId: "", targetWeight: "", notes: "" };
             const setDraft = (patch: Partial<typeof draft>) => setDrafts((current) => ({ ...current, [key]: { ...draft, ...patch } }));
             return [
-              position.symbol,
-              position.name,
-              position.broker,
-              <PositionMarketValue position={position} />,
-              formatMoney(dividendsByPosition.get(key) ?? 0),
+              group.symbol,
+              group.name,
+              group.brokers.join(" + "),
+              group.positions.length,
+              formatMoney(group.marketValue),
+              formatMoney(group.dividends),
               <select value={draft.portfolioId} onChange={(event) => setDraft({ portfolioId: event.target.value })}>
                 <option value="">Sin asignar</option>
                 {virtualPortfolios.map((portfolio) => (
@@ -3992,7 +4057,7 @@ function VirtualPortfoliosView({
               </select>,
               <input value={draft.targetWeight} onChange={(event) => setDraft({ targetWeight: event.target.value })} inputMode="decimal" placeholder="%" />,
               <input value={draft.notes} onChange={(event) => setDraft({ notes: event.target.value })} />,
-              <button onClick={() => onSaveAssignment(position.asset_id, position.broker_id, draft.portfolioId, draft.targetWeight, draft.notes)}>
+              <button onClick={() => onSaveAssignment(group.assetId, draft.portfolioId, draft.targetWeight, draft.notes)}>
                 Guardar
               </button>,
             ];
